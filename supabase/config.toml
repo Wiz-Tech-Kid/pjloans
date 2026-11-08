@@ -1,0 +1,11 @@
+[functions.create-document-upload]
+verify_jwt = true
+
+[functions.finalize-document-upload]
+verify_jwt = true
+
+[functions.get-document-download-url]
+verify_jwt = true
+
+[functions.get-document-view-url]
+verify_jwt = true

@@ -1,0 +1,191 @@
+{
+  "$schema": "./node_modules/@angular/cli/lib/config/schema.json",
+  "version": 1,
+  "newProjectRoot": "apps",
+  "cli": {
+    "packageManager": "pnpm",
+    "analytics": "7db27ebf-c1b1-4099-89af-2fe3716834d9"
+  },
+  "projects": {
+    "borrower": {
+      "projectType": "application",
+      "root": "apps/borrower",
+      "sourceRoot": "apps/borrower/src",
+      "prefix": "pj-borrower",
+      "architect": {
+        "build": {
+          "builder": "@angular/build:application",
+          "options": {
+            "browser": "apps/borrower/src/main.ts",
+            "tsConfig": "apps/borrower/tsconfig.app.json",
+            "index": "apps/borrower/src/index.html",
+            "outputPath": "dist/borrower",
+            "assets": [
+              {
+                "glob": "**/*",
+                "input": "public"
+              }
+            ],
+            "styles": [
+              "src/styles.css"
+            ],
+            "security": {
+              "allowedHosts": []
+            }
+          },
+          "configurations": {
+            "production": {
+              "fileReplacements": [
+                {
+                  "replace": "src/core/environment.ts",
+                  "with": "src/core/environment.prod.ts"
+                }
+              ],
+              "optimization": true,
+              "outputHashing": "all",
+              "budgets": [
+                {
+                  "type": "initial",
+                  "maximumWarning": "2MB",
+                  "maximumError": "3MB"
+                }
+              ]
+            },
+            "api": {
+              "fileReplacements": [
+                {
+                  "replace": "src/core/environment.ts",
+                  "with": "src/core/environment.api.ts"
+                }
+              ],
+              "optimization": false,
+              "sourceMap": true
+            },
+            "development": {
+              "optimization": false,
+              "extractLicenses": false,
+              "sourceMap": true
+            }
+          },
+          "defaultConfiguration": "production"
+        },
+        "serve": {
+          "builder": "@angular/build:dev-server",
+          "options": {
+            "host": "0.0.0.0",
+            "port": 4200,
+            "allowedHosts": true
+          },
+          "configurations": {
+            "production": {
+              "buildTarget": "borrower:build:production"
+            },
+            "api": {
+              "buildTarget": "borrower:build:api"
+            },
+            "development": {
+              "buildTarget": "borrower:build:development"
+            }
+          },
+          "defaultConfiguration": "development"
+        },
+        "test": {
+          "builder": "@angular/build:unit-test",
+          "options": {
+            "tsConfig": "apps/borrower/tsconfig.spec.json"
+          }
+        }
+      }
+    },
+    "admin": {
+      "projectType": "application",
+      "root": "apps/admin",
+      "sourceRoot": "apps/admin/src",
+      "prefix": "pj-admin",
+      "architect": {
+        "build": {
+          "builder": "@angular/build:application",
+          "options": {
+            "browser": "apps/admin/src/main.ts",
+            "tsConfig": "apps/admin/tsconfig.app.json",
+            "index": "apps/admin/src/index.html",
+            "outputPath": "dist/admin",
+            "assets": [
+              {
+                "glob": "**/*",
+                "input": "public"
+              }
+            ],
+            "styles": [
+              "src/styles.css"
+            ],
+            "security": {
+              "allowedHosts": []
+            }
+          },
+          "configurations": {
+            "production": {
+              "fileReplacements": [
+                {
+                  "replace": "src/core/environment.ts",
+                  "with": "src/core/environment.prod.ts"
+                }
+              ],
+              "optimization": true,
+              "outputHashing": "all",
+              "budgets": [
+                {
+                  "type": "initial",
+                  "maximumWarning": "2MB",
+                  "maximumError": "3MB"
+                }
+              ]
+            },
+            "api": {
+              "fileReplacements": [
+                {
+                  "replace": "src/core/environment.ts",
+                  "with": "src/core/environment.api.ts"
+                }
+              ],
+              "optimization": false,
+              "sourceMap": true
+            },
+            "development": {
+              "optimization": false,
+              "extractLicenses": false,
+              "sourceMap": true
+            }
+          },
+          "defaultConfiguration": "production"
+        },
+        "serve": {
+          "builder": "@angular/build:dev-server",
+          "options": {
+            "host": "0.0.0.0",
+            "port": 4201,
+            "allowedHosts": true
+          },
+          "configurations": {
+            "production": {
+              "buildTarget": "admin:build:production"
+            },
+            "api": {
+              "buildTarget": "admin:build:api"
+            },
+            "development": {
+              "buildTarget": "admin:build:development"
+            }
+          },
+          "defaultConfiguration": "development"
+        },
+        "test": {
+          "builder": "@angular/build:unit-test",
+          "options": {
+            "tsConfig": "apps/admin/tsconfig.spec.json"
+          }
+        }
+      }
+    }
+  }
+}

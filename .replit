@@ -1,0 +1,9 @@
+run = "npm run start:borrower"
+
+[[ports]]
+localPort = 4200
+externalPort = 80
+
+[[ports]]
+localPort = 4201
+externalPort = 3001

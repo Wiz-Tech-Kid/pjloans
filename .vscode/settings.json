@@ -1,0 +1,12 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^pwd && printf '\\\\n---\\\\n' && find \\. -maxdepth 2 -type f \\| sed 's#\\^\\./##' \\| sort \\| head -200$/": {
+            "approve": true,
+            "matchCommandLine": true
+        },
+        "/^python - <<'PY'\nimport zipfile, re, os\npath='/home/nickel/Downloads/LoanOps_Technical_Handover_2026-10-14\\.docx'\nwith zipfile\\.ZipFile\\(path\\) as z:\n    names=\\[n for n in z\\.namelist\\(\\) if n\\.endswith\\('\\.xml'\\)\\]\n    print\\('xml files',names\\[:10\\]\\)\n    text=\\[\\]\n    for n in names:\n        if n\\.endswith\\('document\\.xml'\\):\n            data=z\\.read\\(n\\)\n            import xml\\.etree\\.ElementTree as ET\n            root=ET\\.fromstring\\(data\\)\n            ns=\\{'w':'http://schemas\\.openxmlformats\\.org/wordprocessingml/2006/main'\\}\n            for p in root\\.iter\\('\\{http://schemas\\.openxmlformats\\.org/wordprocessingml/2006/main\\}p'\\):\n                t=''\\.join\\(node\\.text or '' for node in p\\.iter\\('\\{http://schemas\\.openxmlformats\\.org/wordprocessingml/2006/main\\}t'\\)\\)\n                if t\\.strip\\(\\): text\\.append\\(t\\)\n    print\\('paragraph count',len\\(text\\)\\)\n    print\\('\\\\n'\\.join\\(text\\[:250\\]\\)\\)\nPY$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

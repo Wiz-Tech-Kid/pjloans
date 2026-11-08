@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "outDir": "../../out-tsc/borrower",
+    "types": []
+  },
+  "files": [
+    "src/main.ts"
+  ],
+  "include": [
+    "../../src/core/**/*.ts"
+  ],
+  "exclude": [
+    "../../src/**/*.spec.ts"
+  ]
+}

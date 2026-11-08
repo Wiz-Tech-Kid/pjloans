@@ -1,0 +1,53 @@
+{
+  "name": "pjloans",
+  "version": "0.0.0",
+  "scripts": {
+    "ng": "ng",
+    "prepare:public-config": "node scripts/prepare-public-config.mjs",
+    "start": "npm run prepare:public-config && ng serve borrower --host 0.0.0.0 --port 4200",
+    "start:borrower": "npm run prepare:public-config && ng serve borrower --host 0.0.0.0 --port 4200",
+    "start:admin": "npm run prepare:public-config && ng serve admin --host 0.0.0.0 --port 4201",
+    "start:borrower:api": "npm run prepare:public-config && ng serve borrower --configuration api --host 0.0.0.0 --port 4200",
+    "start:admin:api": "npm run prepare:public-config && ng serve admin --configuration api --host 0.0.0.0 --port 4201",
+    "build": "npm run build:borrower && npm run build:admin",
+    "build:borrower": "npm run prepare:public-config && ng build borrower",
+    "build:admin": "npm run prepare:public-config && ng build admin",
+    "watch": "npm run prepare:public-config && ng build borrower --watch --configuration development",
+    "test": "npm run test:borrower && npm run test:admin",
+    "test:borrower": "ng test borrower --watch=false",
+    "test:admin": "ng test admin --watch=false"
+  },
+  "private": true,
+  "packageManager": "pnpm@12.15.0",
+  "dependencies": {
+    "@angular/common": "^22.2.0",
+    "@angular/compiler": "^22.2.0",
+    "@angular/core": "^22.2.0",
+    "@angular/forms": "^22.2.0",
+    "@angular/platform-browser": "^22.2.0",
+    "@angular/platform-server": "^22.2.0",
+    "@angular/router": "^22.2.0",
+    "@angular/ssr": "^22.2.3",
+    "@supabase/server": "^1.9.2",
+    "@supabase/supabase-js": "^2.118.0",
+    "express": "^5.1.0",
+    "gsap": "^3.15.0",
+    "rxjs": "~7.8.0",
+    "tslib": "^2.3.0"
+  },
+  "devDependencies": {
+    "@angular/build": "^22.2.3",
+    "@angular/cli": "^22.2.3",
+    "@angular/compiler-cli": "^22.2.0",
+    "@tailwindcss/postcss": "^4.1.12",
+    "@types/express": "^5.0.1",
+    "@types/node": "^22.12.0",
+    "daisyui": "^5.7.50",
+    "jsdom": "^30.0.0",
+    "postcss": "^8.5.3",
+    "prettier": "^3.8.1",
+    "tailwindcss": "^4.1.12",
+    "typescript": "~6.0.2",
+    "vitest": "^5.0.0"
+  }
+}

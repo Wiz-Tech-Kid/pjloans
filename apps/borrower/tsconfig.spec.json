@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "outDir": "../../out-tsc/borrower-spec",
+    "types": []
+  },
+  "include": [
+    "../../src/core/**/*.spec.ts"
+  ]
+}
