@@ -2,6 +2,7 @@
 
 # Compiled output
 /dist
+/public/runtime-config.json
 /tmp
 /out-tsc
 /bazel-out
@@ -10,10 +11,6 @@
 /node_modules
 npm-debug.log
 yarn-error.log
-/.env
-/.env.*
-!.env.example
-/public/runtime-config.json
 
 # IDEs and editors
 .idea/
@@ -42,6 +39,9 @@ yarn-error.log
 testem.log
 /typings
 __screenshots__/
+.env
+.env.*
+!.env.example
 
 # System files
 .DS_Store

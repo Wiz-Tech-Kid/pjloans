@@ -2,7 +2,7 @@ import { createClient } from '@supabase/supabase-js'
 import process from 'node:process'
 
 const projectUrl = 'https://uwkajgkrbdfdldhjdxuu.supabase.co'
-const userId = '2ffb7e7b-fb80-4aec-b648-43b87e530e70'
+const userId = 'f159fd71-996a-4d78-9c4e-b310d856ba5a'
 
 function askHidden(prompt: string): Promise<string> {
   const input = process.stdin

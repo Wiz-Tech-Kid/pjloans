@@ -1,0 +1,452 @@
+@if (screen() === 'borrower') {
+  <main class="borrower-page">
+    <header class="borrower-header">
+      <a class="wordmark" href="/" aria-label="PJVault home">
+        <span class="wordmark__symbol">PJ</span><span>PJVault</span>
+      </a>
+      <button class="theme-button" type="button" (click)="toggleTheme()">
+        <span aria-hidden="true">{{ theme() === 'dark' ? '☼' : '◐' }}</span>
+        <span>{{ theme() === 'dark' ? 'Light mode' : 'Dark mode' }}</span>
+      </button>
+    </header>
+
+    @if (borrowerBusy() && !borrowerSession()) {
+      <section class="borrower-loading"><span class="loader"></span><p>Opening your secure PJVault link…</p></section>
+    } @else if (borrowerError() && !borrowerSession()) {
+      <section class="borrower-error-card">
+        <span class="error-symbol">!</span>
+        <p class="eyebrow">PJVault request link</p>
+        <h1>This link is unavailable.</h1>
+        <p>{{ borrowerError() }}</p>
+        @if (backend.hasSavedBorrowerSession()) {
+          <button class="button button--outline" type="button" (click)="loadBorrowerLink()">Try again</button>
+        }
+      </section>
+    } @else if (borrowerSubmitted()) {
+      <section class="borrower-success">
+        <div class="success-symbol">✓</div>
+        <p class="eyebrow">Submission received</p>
+        <h1>Your details were sent safely.</h1>
+        <p>Your PJVault request is complete. You can close this page.</p>
+        <div class="success-note">
+          <strong>Request {{ borrowerStatus()?.request_code }}</strong>
+          <span>Documents were marked complete only after PJVault finalized each upload.</span>
+        </div>
+      </section>
+    } @else if (borrowerSession(); as session) {
+      <section class="borrower-shell" aria-labelledby="borrower-title">
+        <div class="borrower-intro">
+          <p class="eyebrow">PJVault secure request · {{ session.requestCode }}</p>
+          <h1 id="borrower-title">Complete your request.</h1>
+          <p>Provide your academic details and upload the documents requested by your administrator.</p>
+          <div class="link-expiry">
+            <span class="status-dot status-dot--mint"></span>
+            Session expires {{ shortDate(session.sessionExpiresAt) }}
+          </div>
+        </div>
+
+        <div class="borrower-progress" aria-label="Submission progress">
+          @for (step of ['Your details', 'Documents', 'Review']; track step; let index = $index) {
+            <div class="borrower-progress__step" [class.is-active]="borrowerStep() === index" [class.is-done]="borrowerStep() > index">
+              <span>{{ borrowerStep() > index ? '✓' : index + 1 }}</span><small>{{ step }}</small>
+            </div>
+          }
+        </div>
+
+        <form class="borrower-form" (ngSubmit)="borrowerStep() === 2 ? submitBorrower() : nextBorrowerStep()" novalidate>
+          @if (borrowerStep() === 0) {
+            <div class="form-step">
+              <div class="step-heading">
+                <p class="eyebrow">Step 1 of 3</p>
+                <h2>Your academic details</h2>
+                <p>Use the WhatsApp number where PJVault can reach you.</p>
+              </div>
+              <div class="field-stack">
+                <label>
+                  <span>WhatsApp number <b>*</b></span>
+                  <input name="whatsappNumber" [(ngModel)]="borrowerWhatsApp" autocomplete="tel" inputmode="tel" required placeholder="+267 71 000 000" />
+                </label>
+                <label>
+                  <span>Course name <b>*</b></span>
+                  <input name="courseName" [(ngModel)]="borrowerCourseName" required maxlength="200" placeholder="e.g. Bachelor of Nursing" />
+                </label>
+                <label>
+                  <span>Academic year <b>*</b></span>
+                  <input name="academicYear" [(ngModel)]="borrowerAcademicYear" required maxlength="30" placeholder="e.g. Year 2" />
+                </label>
+              </div>
+            </div>
+          }
+
+          @if (borrowerStep() === 1) {
+            <div class="form-step">
+              <div class="step-heading">
+                <p class="eyebrow">Step 2 of 3</p>
+                <h2>Upload required documents</h2>
+                <p>Each file is uploaded privately and confirmed only after PJVault finalizes it.</p>
+              </div>
+              <div class="upload-list">
+                @for (slot of borrowerUploads; track slot.document_type) {
+                  <article class="upload-card" [class.upload-card--filled]="slot.state === 'finalized'">
+                    <span class="upload-card__icon" aria-hidden="true">↑</span>
+                    <span class="upload-card__copy">
+                      <strong>{{ documentLabel(slot.document_type) }}{{ slot.required ? ' · Required' : ' · Optional' }}</strong>
+                      <small>{{ slot.file?.name || (mimeLabel(slot.allowed_mime_types) + ' · max ' + fileSize(slot.max_file_size_bytes)) }}</small>
+                      @if (slot.state === 'uploading') {
+                        <span class="upload-progress" role="progressbar" [attr.aria-valuenow]="slot.progress" aria-valuemin="0" aria-valuemax="100">
+                          <i [style.width.%]="slot.progress"></i>
+                        </span>
+                      }
+                      @if (slot.state === 'finalized') {
+                        <small class="upload-card__success">Uploaded and finalized</small>
+                      }
+                      @if (slot.error) {
+                        <small class="upload-card__error" role="alert">{{ slot.error }}</small>
+                      }
+                    </span>
+                    <span class="upload-card__controls">
+                      @if (slot.state !== 'finalized') {
+                        <label class="upload-card__choose">
+                          <span>{{ slot.file ? 'Change file' : 'Choose file' }}</span>
+                          <input
+                            type="file"
+                            [name]="'file-' + slot.document_type"
+                            [accept]="slot.allowed_mime_types.join(',')"
+                            [disabled]="slot.state === 'uploading'"
+                            (change)="onBorrowerFile($event, slot.document_type)"
+                          />
+                        </label>
+                        <button class="text-button" type="button" [disabled]="!slot.file || slot.state === 'uploading'" (click)="uploadDocument(slot.document_type)">
+                          {{ slot.state === 'uploading' ? 'Uploading…' : slot.state === 'error' ? 'Retry upload' : 'Upload' }}
+                        </button>
+                      }
+                    </span>
+                  </article>
+                }
+              </div>
+              @if (borrowerStatus(); as status) {
+                <p class="form-footnote">Request {{ status.request_code }} · {{ status.status.replaceAll('_', ' ') }}</p>
+              }
+            </div>
+          }
+
+          @if (borrowerStep() === 2) {
+            <div class="form-step">
+              <div class="step-heading">
+                <p class="eyebrow">Step 3 of 3</p>
+                <h2>Review your details</h2>
+                <p>Confirm the information and uploaded documents before submitting.</p>
+              </div>
+              <div class="review-list">
+                <div><span>WhatsApp number</span><strong>{{ borrowerWhatsApp }}</strong></div>
+                <div><span>Course name</span><strong>{{ borrowerCourseName }}</strong></div>
+                <div><span>Academic year</span><strong>{{ borrowerAcademicYear }}</strong></div>
+                @for (slot of borrowerUploads; track slot.document_type) {
+                  <div><span>{{ documentLabel(slot.document_type) }}</span><strong>{{ slot.state === 'finalized' ? 'Uploaded and finalized' : slot.required ? 'Required upload missing' : 'Not uploaded' }}</strong></div>
+                }
+              </div>
+            </div>
+          }
+
+          @if (borrowerError()) { <p class="inline-error" role="alert">{{ borrowerError() }}</p> }
+          <div class="form-actions">
+            <button class="button button--ghost" type="button" [disabled]="borrowerStep() === 0 || borrowerBusy()" (click)="previousBorrowerStep()">Back</button>
+            <button class="button button--mint" type="submit" [disabled]="borrowerBusy()">
+              {{ borrowerBusy() ? 'Submitting…' : borrowerStep() === 2 ? 'Submit PJVault details' : 'Continue' }} <span aria-hidden="true">→</span>
+            </button>
+          </div>
+        </form>
+      </section>
+    }
+
+    <footer class="borrower-footer"><span>PJVault</span><span>Your link and upload session are private and expire automatically.</span></footer>
+  </main>
+} @else if (screen() === 'login') {
+  <main class="login-page">
+    <header class="login-header">
+      <a class="wordmark" href="/" aria-label="PJVault home"><span class="wordmark__symbol">PJ</span><span>PJVault</span></a>
+      <button class="theme-button" type="button" (click)="toggleTheme()">
+        <span aria-hidden="true">{{ theme() === 'dark' ? '☼' : '◐' }}</span>
+        <span>{{ theme() === 'dark' ? 'Light mode' : 'Dark mode' }}</span>
+      </button>
+    </header>
+    <section class="login-card" aria-labelledby="login-title">
+      <div class="login-card__mark"><span></span><span></span><span></span></div>
+      <p class="eyebrow">Administrator access</p>
+      <h1 id="login-title">Keep every request moving.</h1>
+      <p class="login-card__copy">A private PJVault workspace for creating secure document requests.</p>
+      <form class="login-form" (ngSubmit)="signIn()" novalidate>
+        <label><span>Email address</span><input name="email" type="email" [(ngModel)]="loginEmail" autocomplete="username" inputmode="email" required placeholder="admin@example.com" /></label>
+        <label><span>Password</span><input name="password" type="password" [(ngModel)]="loginPassword" autocomplete="current-password" required placeholder="Enter your password" /></label>
+        <label class="remember-field"><input name="rememberMe" type="checkbox" [(ngModel)]="rememberMe" /><span>Remember me on this device</span></label>
+        @if (loginError) { <p class="inline-error" role="alert">{{ loginError }}</p> }
+        @if (backend.configError()) { <p class="inline-error" role="alert">{{ backend.configError() }}</p> }
+        <button class="button button--mint button--full" type="submit" [disabled]="backend.loading()">
+          {{ backend.loading() ? 'Checking access…' : 'Enter workspace' }} <span aria-hidden="true">→</span>
+        </button>
+      </form>
+      <div class="login-note"><span class="status-dot status-dot--mint"></span><span>Supabase Auth · active PJVault ADMIN membership required</span></div>
+    </section>
+    <footer class="login-footer"><span>PJVault operations</span><span>Private document requests</span></footer>
+  </main>
+} @else {
+  <main class="admin-page" [class.mobile-nav-open]="mobileNavOpen()">
+    <aside class="admin-sidebar" aria-label="Administrator navigation">
+      <div class="admin-sidebar__top">
+        <a class="wordmark" href="/" aria-label="PJVault home" (click)="goHome($event)"><span class="wordmark__symbol">PJ</span><span>PJVault</span></a>
+        <button class="sidebar-close" type="button" aria-label="Close navigation" (click)="mobileNavOpen.set(false)">×</button>
+      </div>
+      <div class="sidebar-label">Workspace</div>
+      <nav class="admin-nav">
+        <button type="button" [class.is-active]="adminView() === 'home'" (click)="openHome()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z" /></svg><span>Home</span></button>
+        <button type="button" [class.is-active]="adminView() === 'requests'" (click)="openRequests()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5h8l4 4V20.5H6zM14 3.5v4h4M9 12h6M9 16h6" /></svg><span>Requests</span><b>{{ backend.requests().length || '—' }}</b></button>
+        <button type="button" [class.is-active]="adminView() === 'archive'" (click)="openArchive()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4zM7 8h10M7 12h10M7 16h6" /></svg><span>Document archive</span><b>{{ archiveEntries().length || '—' }}</b></button>
+        <button type="button" [class.is-active]="adminView() === 'create'" (click)="openCreateLink()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg><span>Create request</span></button>
+      </nav>
+      <div class="admin-sidebar__bottom"><div class="sidebar-callout"><span class="sidebar-callout__symbol">✦</span><div><strong>Private workspace</strong><small>Borrowers receive temporary links only.</small></div></div><div class="admin-account"><span class="account-avatar">{{ (backend.adminUser()?.name || 'AD').slice(0, 2).toUpperCase() }}</span><span><strong>{{ backend.adminUser()?.name || 'Administrator' }}</strong><small>Admin account</small></span><button type="button" (click)="signOut()" aria-label="Sign out">↗</button></div></div>
+    </aside>
+    @if (mobileNavOpen()) { <button class="nav-scrim" type="button" aria-label="Close navigation" (click)="mobileNavOpen.set(false)"></button> }
+    <header class="admin-page__header">
+      <button class="menu-button" type="button" aria-label="Open navigation" (click)="mobileNavOpen.set(true)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg></button>
+      <a class="wordmark" href="/" aria-label="PJVault dashboard" (click)="goHome($event)"><span class="wordmark__symbol">PJ</span><span>PJVault</span></a>
+      <nav class="admin-page__nav" aria-label="Administrator navigation">
+        <button type="button" [class.is-active]="adminView() === 'home'" (click)="openHome()">Home</button>
+        <button type="button" [class.is-active]="adminView() === 'requests'" (click)="openRequests()">Requests</button>
+        <button type="button" [class.is-active]="adminView() === 'archive'" (click)="openArchive()">Archive</button>
+        <button type="button" [class.is-active]="adminView() === 'create'" (click)="openCreateLink()">Create request</button>
+      </nav>
+      <div class="admin-page__account">
+        <span>{{ backend.adminUser()?.name }}</span>
+        <button class="button button--outline" type="button" (click)="signOut()">Sign out</button>
+      </div>
+    </header>
+    @if (adminView() === 'home') {
+      <section class="admin-dashboard" aria-labelledby="home-title">
+        <div class="view-heading">
+          <div>
+            <p class="eyebrow">PJVault operations</p>
+            <h1 id="home-title">Home dashboard<span class="mint-period">.</span></h1>
+            <p>Start a borrower request, keep the document checklist consistent, and review each submission securely.</p>
+          </div>
+          <button class="button button--mint" type="button" (click)="openCreateLink()">Create secure link <span aria-hidden="true">→</span></button>
+        </div>
+        <div class="dashboard-cards">
+          <article class="dashboard-card dashboard-card--featured">
+            <p class="eyebrow">Primary action</p>
+            <h2>Create a borrower request</h2>
+            <p>Send one private link with the exact evidence the borrower needs to provide.</p>
+            <button class="button button--mint" type="button" (click)="openCreateLink()">Create secure link <span aria-hidden="true">→</span></button>
+          </article>
+          <article class="dashboard-card">
+            <p class="eyebrow">Standard checklist</p>
+            <strong class="dashboard-card__stat">5</strong>
+            <h2>Default documents</h2>
+            <p>Student ID, identity, admission, sponsorship, and current timetable.</p>
+          </article>
+          <article class="dashboard-card">
+            <p class="eyebrow">Access model</p>
+            <strong class="dashboard-card__stat">1</strong>
+            <h2>Administrator workspace</h2>
+            <p>Borrowers use a temporary link and never create a PJVault account.</p>
+          </article>
+        </div>
+        <div class="dashboard-note"><span class="status-dot status-dot--mint"></span><div><strong>Ready for the next request</strong><p>Every new link starts with the standard five-document checklist. Add more only when a case needs it.</p></div></div>
+        <article class="dashboard-activity"><div class="dashboard-activity__heading"><div><p class="eyebrow">Live workspace</p><h2>Recent requests</h2></div><button class="text-button" type="button" (click)="openRequests()">View all <span>↗</span></button></div>@for (request of backend.requests().slice(0, 3); track request.requestId) {<div class="dashboard-activity__row"><span class="request-history__mark">{{ request.requestCode.slice(0, 1) }}</span><div><strong>{{ request.recipientLabel || request.requestCode }}</strong><small>{{ request.requestCode }} · {{ request.status.replaceAll('_', ' ') }}</small></div><span class="state-pill" [class]="'state-pill--' + request.status.toLowerCase()">{{ request.status.replaceAll('_', ' ') }}</span></div>} @empty {<div class="dashboard-activity__empty"><span>∅</span><p>No live requests yet.</p><small>New temporary-link requests will appear here.</small></div>}</article>
+      </section>
+    } @else if (adminView() === 'create') {
+    <section class="admin-panel" aria-labelledby="admin-title">
+      <div class="view-heading">
+        <div>
+          <p class="eyebrow">PJVault document requests</p>
+          <h1 id="admin-title">Create a secure request link<span class="mint-period">.</span></h1>
+          <p>Choose the recipient, expiry, and exact documents the borrower must provide.</p>
+        </div>
+      </div>
+      <form class="admin-form" (ngSubmit)="createLink()" novalidate>
+        <div class="field-stack">
+          <label><span>Recipient label</span><input name="recipientLabel" [(ngModel)]="recipientLabel" maxlength="160" placeholder="Optional name for this request" /></label>
+          <label><span>External reference</span><input name="externalReference" [(ngModel)]="externalReference" maxlength="160" placeholder="Optional reference" /></label>
+          <label class="ttl-field">
+            <span>How long is the link valid from now?</span>
+            <select name="createTtlPreset" [(ngModel)]="createTtlPreset" (ngModelChange)="selectCreateTtlPreset($event)">
+              @for (preset of linkTtlPresets; track preset.value) {
+                <option [value]="preset.value">{{ preset.label }}</option>
+              }
+            </select>
+          </label>
+          @if (createTtlPreset === 'custom') {
+            <label class="ttl-field">
+              <span>Custom duration in whole minutes</span>
+              <input name="createCustomTtlMinutes" type="number" min="1" max="43200" step="1" [(ngModel)]="createCustomTtlMinutes" />
+              <small>Enter 1 to 43,200 minutes (up to 30 days).</small>
+            </label>
+          }
+        </div>
+
+        <div class="requirement-heading">
+          <div><p class="eyebrow">Documents</p><h2>Requirements</h2></div>
+          <span class="requirements-limit">5 standard documents</span>
+        </div>
+        <div class="requirement-list">
+          @for (requirement of requirementForms; track $index; let index = $index) {
+            <fieldset class="requirement-card">
+              <legend>Document {{ index + 1 }}</legend>
+              @if (requirement.isDefault) {
+                <div class="requirement-card__identity">
+                  <span class="requirement-card__number">{{ index + 1 }}</span>
+                  <div>
+                    <strong>{{ requirement.label }}</strong>
+                    <small>{{ requirement.description }}</small>
+                  </div>
+                </div>
+                <input class="visually-hidden" [name]="'documentType-' + index" [(ngModel)]="requirement.documentType" required maxlength="64" />
+              } @else {
+                <label>
+                  <span>Document name <b>*</b></span>
+                  <input [name]="'documentLabel-' + index" [(ngModel)]="requirement.label" required maxlength="120" placeholder="e.g. Proof of residence" />
+                </label>
+                <label>
+                  <span>Internal key <b>*</b></span>
+                  <input [name]="'documentType-' + index" [(ngModel)]="requirement.documentType" required maxlength="64" placeholder="e.g. PROOF_OF_RESIDENCE" />
+                </label>
+                <label class="requirement-card__description">
+                  <span>Purpose</span>
+                  <input [name]="'description-' + index" [(ngModel)]="requirement.description" maxlength="180" placeholder="What this document verifies" />
+                </label>
+              }
+              <label class="checkbox-field">
+                <input [name]="'required-' + index" type="checkbox" [(ngModel)]="requirement.required" />
+                <span>Required</span>
+              </label>
+              <div class="mime-options">
+                <span>Allowed file types <b>*</b></span>
+                @for (mimeType of ['application/pdf', 'image/jpeg', 'image/png']; track mimeType) {
+                  <label class="checkbox-field">
+                    <input
+                      [name]="'mime-' + index + '-' + mimeType"
+                      type="checkbox"
+                      [checked]="requirement.allowedMimeTypes.includes(mimeType)"
+                      (change)="toggleMimeType(requirement, mimeType, $event)"
+                    />
+                    <span>{{ mimeType === 'application/pdf' ? 'PDF' : mimeType === 'image/jpeg' ? 'JPG' : 'PNG' }}</span>
+                  </label>
+                }
+              </div>
+              <label>
+                <span>Maximum file size (MiB) <b>*</b></span>
+                <input [name]="'maxFileSize-' + index" type="number" min="1" max="20" step="1" [(ngModel)]="requirement.maxFileSizeMb" required />
+              </label>
+              <button class="text-button requirement-remove" type="button" [disabled]="requirement.isDefault" (click)="removeRequirement(index)">{{ requirement.isDefault ? 'Standard requirement' : 'Remove requirement' }}</button>
+            </fieldset>
+          }
+        </div>
+
+        @if (pageMessage()) { <p class="inline-error" role="alert">{{ pageMessage() }}</p> }
+        <button class="button button--mint button--full" type="submit" [disabled]="linkBusy()">
+          {{ linkBusy() ? 'Creating request…' : 'Create secure borrower link' }} <span aria-hidden="true">→</span>
+        </button>
+      </form>
+      @if (generatedLink(); as link) {
+        <section class="generated-link-panel" aria-live="polite">
+          <p class="eyebrow">Link created</p>
+          <p>Share this link with the borrower. The raw token is included only in this URL.</p>
+          <div class="generated-link">
+            <input aria-label="Shareable borrower link" [value]="link.url" readonly />
+            <button type="button" (click)="copyLink()">Copy</button>
+            <small>Expires {{ shortDate(link.expiresAt) }}</small>
+          </div>
+        </section>
+      }
+    </section>
+    } @else if (adminView() === 'requests') {
+      <section class="admin-panel" aria-labelledby="requests-title">
+        <div class="view-heading">
+          <div>
+            <p class="eyebrow">Borrower workflow</p>
+            <h1 id="requests-title">Requests<span class="mint-period">.</span></h1>
+            <p>Review the temporary-link requests created by this administrator workspace.</p>
+          </div>
+          <button class="button button--mint" type="button" (click)="openCreateLink()">Create request link <span aria-hidden="true">→</span></button>
+        </div>
+        @if (backend.requestsLoading()) { <p class="loading-state">Loading live requests…</p> }
+        @if (backend.requestsError()) { <p class="inline-error" role="alert">{{ backend.requestsError() }} <button class="text-button" type="button" (click)="backend.loadAdminRequests()">Retry</button></p> }
+        <div class="request-summary-grid"><article><span>Total requests</span><strong>{{ requestCount() }}</strong></article><article><span>Open</span><strong>{{ requestCount('OPEN') }}</strong></article><article><span>Submitted</span><strong>{{ requestCount('SUBMITTED') }}</strong></article></div>
+        <div class="request-history">
+          @for (request of backend.requests(); track request.requestId) {
+            <article class="request-history__row">
+              <span class="request-history__mark">{{ request.requestCode.slice(0, 1) }}</span>
+              <div><strong>{{ request.recipientLabel || request.requestCode }}</strong><small>{{ request.requestCode }}{{ request.externalReference ? ' · ' + request.externalReference : '' }}</small></div>
+              <span class="state-pill" [class]="'state-pill--' + request.status.toLowerCase()">{{ request.status.replaceAll('_', ' ') }}</span>
+              <small class="request-expiry-date">Expires {{ shortDate(request.expiresAt) }}</small>
+              @if (isRequestExpiryEligible(request)) {
+                <div class="request-expiry-actions">
+                  @if (expiryEditorRequestId() !== request.requestId) {
+                    <button class="button button--outline" type="button" (click)="openExpiryEditor(request.requestId)">Extend/set expiry</button>
+                  } @else {
+                    <div class="request-expiry-editor">
+                      <label>
+                        <span>How long is the link valid from now?</span>
+                        <select
+                          [name]="'requestTtlPreset-' + request.requestId"
+                          [ngModel]="existingTtlPreset"
+                          (ngModelChange)="selectExistingTtlPreset($event)"
+                          [ngModelOptions]="{ standalone: true }"
+                        >
+                          @for (preset of linkTtlPresets; track preset.value) {
+                            <option [value]="preset.value">{{ preset.label }}</option>
+                          }
+                        </select>
+                      </label>
+                      @if (existingTtlPreset === 'custom') {
+                        <label>
+                          <span>Custom duration in whole minutes</span>
+                          <input
+                            [name]="'requestCustomTtlMinutes-' + request.requestId"
+                            type="number"
+                            min="1"
+                            max="43200"
+                            step="1"
+                            [(ngModel)]="existingCustomTtlMinutes"
+                            [ngModelOptions]="{ standalone: true }"
+                          />
+                          <small>Enter 1 to 43,200 minutes (up to 30 days).</small>
+                        </label>
+                      }
+                      <div class="request-expiry-editor__buttons">
+                        <button class="button button--mint" type="button" [disabled]="expiryBusyRequestId() === request.requestId" (click)="setExistingRequestExpiry(request)">
+                          {{ expiryBusyRequestId() === request.requestId ? 'Updating expiry…' : 'Set expiry from now' }}
+                        </button>
+                        <button class="button button--ghost" type="button" [disabled]="expiryBusyRequestId() === request.requestId" (click)="expiryEditorRequestId.set(null)">Cancel</button>
+                      </div>
+                    </div>
+                  }
+                </div>
+              } @else {
+                <small class="request-expiry-unavailable">Expiry can only be set for active, unsubmitted requests.</small>
+              }
+              @if (requestExpiryErrors()[request.requestId]) {
+                <p class="inline-error request-expiry-message" role="alert">{{ requestExpiryErrors()[request.requestId] }}</p>
+              }
+              @if (requestExpirySuccess()[request.requestId]) {
+                <p class="request-expiry-success" role="status">{{ requestExpirySuccess()[request.requestId] }}</p>
+              }
+            </article>
+          } @empty {
+            @if (!backend.requestsLoading()) { <div class="empty-panel"><span>∅</span><h2>No requests yet.</h2><p>Create a secure borrower link to start a request.</p><button class="button button--outline" type="button" (click)="openCreateLink()">Create request link</button></div> }
+          }
+        </div>
+      </section>
+    } @else {
+      <section class="admin-panel" aria-labelledby="archive-title">
+        <div class="view-heading"><div><p class="eyebrow">Evidence and history</p><h1 id="archive-title">Document archive<span class="mint-period">.</span></h1><p>See the document requirements attached to each live request.</p></div><button class="button button--outline" type="button" (click)="openRequests()">View requests</button></div>
+        <div class="archive-summary"><article><span>Required document slots</span><strong>{{ archiveEntries().length }}</strong></article><article><span>Requests with checklists</span><strong>{{ backend.requests().length }}</strong></article><article><span>Review source</span><strong>PJVault</strong></article></div>
+        <div class="archive-table">
+          @for (entry of archiveEntries(); track entry.requestCode + entry.documentType) {
+            <div class="archive-table__row"><span class="file-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5h8l4 4V20.5H6zM14 3.5v4h4M9 12h6M9 16h4" /></svg></span><div><strong>{{ entry.documentType.replaceAll('_', ' ') }}</strong><small>{{ entry.requestCode }}</small></div><span class="state-pill" [class]="'state-pill--' + entry.status.toLowerCase()">{{ entry.status.replaceAll('_', ' ') }}</span></div>
+          } @empty { <div class="empty-panel"><span>⌕</span><h2>No archive records yet.</h2><p>Create a request to attach the standard document checklist.</p></div> }
+        </div>
+      </section>
+    }
+    <footer class="login-footer"><span>PJVault operations</span><span>Admin request creation is authorized by PJVault.</span></footer>
+  </main>
+}
