@@ -21,6 +21,7 @@
     "@angular/platform-server": "^22.2.0",
     "@angular/router": "^22.2.0",
     "@angular/ssr": "^22.2.3",
+    "@netlify/angular-runtime": "^4.0.0",
     "@supabase/server": "^1.9.2",
     "@supabase/supabase-js": "^2.119.0",
     "express": "^5.1.0",
