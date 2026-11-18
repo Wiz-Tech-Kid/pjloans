@@ -59,7 +59,25 @@ interface PersistedBorrowerSession {
 export class BorrowerSessionPersistenceError extends Error {}
 
 export class BorrowerApiError extends Error {
-  constructor(message: string, readonly code: string | null) {
+  constructor(message: string, readonly code: string | null, readonly status: number | null = null) {
+    super(message);
+  }
+}
+
+export class BackendHttpError extends Error {
+  constructor(message: string, readonly status: number, readonly code: string | null) {
+    super(message);
+  }
+}
+
+export type AdminDocumentPreviewErrorCode = 'VIEW_URL_FAILED' | 'VIEW_URL_EXPIRED';
+
+export class AdminDocumentPreviewError extends Error {
+  constructor(
+    readonly diagnosticCode: AdminDocumentPreviewErrorCode,
+    message: string,
+    readonly httpStatus: number | null,
+  ) {
     super(message);
   }
 }
@@ -106,6 +124,50 @@ export interface AdminRequestRecord {
   borrowerDetailsSubmitted: boolean;
   submissionComplete: boolean;
   requirements: BorrowerRequirementStatus[];
+}
+
+export interface AdminApplicationDocument {
+  documentId: string;
+  documentType: string;
+  fileName: string;
+  mimeType: string;
+  reviewStatus: string;
+  submittedAt: string | null;
+  reviewNote: string | null;
+  required: boolean;
+}
+
+export interface AdminApplication {
+  requestId: string;
+  requestCode: string;
+  status: string;
+  recipientLabel: string | null;
+  submittedAt: string | null;
+  borrowerDetailsSubmitted: boolean;
+  borrowerDetails: BorrowerDetails;
+  documents: AdminApplicationDocument[];
+}
+
+export interface AdminLoanRecord {
+  loanId: string;
+  requestId: string;
+  requestCode: string;
+  borrowerName: string | null;
+  courseName: string | null;
+  academicYear: string | null;
+  whatsappNumber: string | null;
+  amount: number | null;
+  dueDate: string | null;
+  status: string;
+  approvedAt: string | null;
+}
+
+export interface AdminDocumentPreview {
+  url: string;
+  expiresInSeconds: number;
+  expiresAt: number;
+  httpStatus: number;
+  operationId: string;
 }
 
 export interface BorrowerDetails {
@@ -175,7 +237,7 @@ function rows(value: unknown): Record<string, unknown>[] {
     return value.filter((item): item is Record<string, unknown> => isRecord(item));
   }
   if (isRecord(value)) {
-    for (const key of ['data', 'rows', 'items', 'records', 'result']) {
+    for (const key of ['data', 'rows', 'items', 'records', 'result', 'requests', 'loans']) {
       if (key in value) return rows(value[key]);
     }
     return [value];
@@ -280,6 +342,9 @@ export class BackendService {
   readonly requests = signal<AdminRequestRecord[]>([]);
   readonly requestsLoading = signal(false);
   readonly requestsError = signal('');
+  readonly loans = signal<AdminLoanRecord[]>([]);
+  readonly loansLoading = signal(false);
+  readonly loansError = signal('');
   readonly loading = signal(false);
 
   private accessToken: string | null = null;
@@ -373,6 +438,8 @@ export class BackendService {
     this.adminUser.set(null);
     this.requests.set([]);
     this.requestsError.set('');
+    this.loans.set([]);
+    this.loansError.set('');
   }
 
   async loadAdminRequests(): Promise<void> {
@@ -380,16 +447,158 @@ export class BackendService {
     this.requestsLoading.set(true);
     this.requestsError.set('');
     try {
-      const response = await this.edgeRequest('pjvault-admin-api', {
-        action: 'list_requests',
-        limit: 100,
-        offset: 0,
-      }, this.accessToken);
-      this.requests.set(rows(response).map((row) => this.mapAdminRequest(row)));
+      const loadedRequests: AdminRequestRecord[] = [];
+      const pageSize = 100;
+      for (let offset = 0; ; offset += pageSize) {
+        const response = await this.edgeRequest('pjvault-admin-api', {
+          action: 'list_requests',
+          limit: pageSize,
+          offset,
+        }, this.accessToken);
+        const page = rows(response);
+        loadedRequests.push(...page.map((row) => this.mapAdminRequest(row)));
+        if (page.length < pageSize) break;
+      }
+      this.requests.set(loadedRequests);
     } catch (error) {
       this.requestsError.set(error instanceof Error ? error.message : 'PJVault requests could not be loaded.');
     } finally {
       this.requestsLoading.set(false);
+    }
+  }
+
+  async loadAdminApplication(requestId: string): Promise<AdminApplication> {
+    const accessToken = this.requireAdminAccessToken();
+    const response = await this.edgeRequest('pjvault-admin-api', {
+      action: 'get_application',
+      request_id: requestId,
+    }, accessToken);
+    return this.mapAdminApplication(response, requestId);
+  }
+
+  async reviewAdminDocument(documentId: string, decision: 'ACCEPTED' | 'REJECTED', note: string): Promise<void> {
+    const accessToken = this.requireAdminAccessToken();
+    await this.edgeRequest('pjvault-admin-api', {
+      action: 'review_document',
+      document_id: documentId,
+      decision,
+      note: note.trim() || null,
+    }, accessToken);
+  }
+
+  async approveAdminApplication(
+    requestId: string,
+    loanAmount: number,
+    dueDate: string,
+    decisionNote: string,
+  ): Promise<void> {
+    const accessToken = this.requireAdminAccessToken();
+    if (!Number.isFinite(loanAmount) || loanAmount <= 0) {
+      throw new Error('Enter a loan amount greater than zero.');
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dueDate) || !Number.isFinite(Date.parse(`${dueDate}T00:00:00.000Z`))) {
+      throw new Error('Choose a valid loan due date.');
+    }
+    await this.edgeRequest('pjvault-admin-api', {
+      action: 'approve_application',
+      request_id: requestId,
+      loan_amount: loanAmount,
+      due_date: dueDate,
+      decision_note: decisionNote.trim() || null,
+    }, accessToken);
+  }
+
+  async loadAdminLoans(): Promise<void> {
+    if (!this.accessToken || !this.adminUser()) return;
+    this.loansLoading.set(true);
+    this.loansError.set('');
+    try {
+      const loadedLoans: AdminLoanRecord[] = [];
+      const pageSize = 100;
+      for (let offset = 0; ; offset += pageSize) {
+        const response = await this.edgeRequest('pjvault-admin-api', {
+          action: 'list_loans',
+          limit: pageSize,
+          offset,
+        }, this.accessToken);
+        const page = rows(response);
+        loadedLoans.push(...page.map((row) => this.mapAdminLoan(row)));
+        if (page.length < pageSize) break;
+      }
+      this.loans.set(loadedLoans);
+    } catch (error) {
+      this.loansError.set(error instanceof Error ? error.message : 'PJVault loans could not be loaded.');
+    } finally {
+      this.loansLoading.set(false);
+    }
+  }
+
+  async createAdminDocumentPreview(
+    documentId: string,
+    operationId: string,
+  ): Promise<AdminDocumentPreview> {
+    const accessToken = this.requireAdminAccessToken();
+    try {
+      const result = await this.edgeRequestWithStatus(
+        'pjvault-admin-view-url',
+        { document_id: documentId },
+        accessToken,
+      );
+      const response = firstRecord(result.body);
+      const url = valueString(response?.['url']);
+      const expiresInSeconds = Number(response?.['expires_in_seconds']);
+      if (!Number.isFinite(expiresInSeconds)) {
+        throw new AdminDocumentPreviewError(
+          'VIEW_URL_FAILED',
+          'PJVault did not return a valid document preview lifetime.',
+          result.status,
+        );
+      }
+      if (expiresInSeconds < 1) {
+        throw new AdminDocumentPreviewError(
+          'VIEW_URL_EXPIRED',
+          'PJVault returned an expired document preview URL.',
+          result.status,
+        );
+      }
+
+      let parsedUrl: URL;
+      try {
+        parsedUrl = new URL(url);
+      } catch {
+        throw new AdminDocumentPreviewError(
+          'VIEW_URL_FAILED',
+          'PJVault did not return a valid document preview URL.',
+          result.status,
+        );
+      }
+      if (
+        parsedUrl.protocol !== 'https:' ||
+        parsedUrl.username !== '' ||
+        parsedUrl.password !== '' ||
+        !parsedUrl.searchParams.has('X-Amz-Signature')
+      ) {
+        throw new AdminDocumentPreviewError(
+          'VIEW_URL_FAILED',
+          'PJVault did not return a secure document preview URL.',
+          result.status,
+        );
+      }
+      return {
+        url,
+        expiresInSeconds,
+        expiresAt: Date.now() + expiresInSeconds * 1000,
+        httpStatus: result.status,
+        operationId,
+      };
+    } catch (error) {
+      if (error instanceof AdminDocumentPreviewError) throw error;
+      const httpStatus = error instanceof BackendHttpError ? error.status : null;
+      throw new AdminDocumentPreviewError(
+        'VIEW_URL_FAILED',
+        'A secure document preview could not be created. Please try again.',
+        httpStatus,
+      );
     }
   }
 
@@ -875,11 +1084,105 @@ export class BackendService {
     };
   }
 
+  private mapAdminApplication(value: unknown, fallbackRequestId: string): AdminApplication {
+    const root = firstRecord(value);
+    if (!root) throw new Error('PJVault returned invalid application details.');
+    const application = firstRecord(root['application']) ?? firstRecord(root['request']) ?? root;
+    const details = firstRecord(application['borrower_details'])
+      ?? firstRecord(root['borrower_details'])
+      ?? firstRecord(application['borrower'])
+      ?? application;
+    const rawDocuments = application['documents']
+      ?? application['submitted_documents']
+      ?? application['uploaded_documents']
+      ?? root['documents']
+      ?? root['submitted_documents'];
+    const documentRows = Array.isArray(rawDocuments)
+      ? rawDocuments.filter((item): item is Record<string, unknown> => isRecord(item))
+      : [];
+    const documents = documentRows.map((document): AdminApplicationDocument => {
+      const documentId = stringValue(document, ['document_id', 'id']);
+      if (!documentId) throw new Error('PJVault returned an application document without its document ID.');
+      return {
+        documentId,
+        documentType: stringValue(document, ['document_type', 'type'], 'Document'),
+        fileName: stringValue(document, ['original_filename', 'file_name', 'filename'], 'Submitted document'),
+        mimeType: stringValue(document, ['mime_type', 'content_type'], 'application/octet-stream'),
+        reviewStatus: stringValue(document, ['review_status', 'document_status', 'status'], 'PENDING'),
+        submittedAt: nullableString(document, ['uploaded_at', 'submitted_at', 'created_at']),
+        reviewNote: nullableString(document, ['review_note', 'admin_note']),
+        required: document['required'] === true,
+      };
+    });
+    const whatsappNumber = nullableString(details, ['whatsapp_number', 'phone_number']);
+    const courseName = nullableString(details, ['course_name', 'course']);
+    const academicYear = nullableString(details, ['academic_year', 'year_of_study']);
+
+    return {
+      requestId: stringValue(application, ['request_id', 'id'], fallbackRequestId),
+      requestCode: stringValue(application, ['request_code', 'code'], 'Request'),
+      status: stringValue(application, ['application_status', 'review_status', 'status', 'request_status'], 'UNKNOWN'),
+      recipientLabel: nullableString(application, ['recipient_label', 'borrower_name', 'full_name'])
+        ?? nullableString(details, ['full_name', 'borrower_name', 'name']),
+      submittedAt: nullableString(application, ['submitted_at', 'created_at']),
+      borrowerDetailsSubmitted: application['borrower_details_submitted'] === true
+        || root['borrower_details_submitted'] === true
+        || Boolean(whatsappNumber && courseName && academicYear),
+      borrowerDetails: {
+        whatsappNumber: whatsappNumber ?? '',
+        courseName: courseName ?? '',
+        academicYear: academicYear ?? '',
+      },
+      documents,
+    };
+  }
+
+  private mapAdminLoan(row: Record<string, unknown>): AdminLoanRecord {
+    const borrowerDetails = firstRecord(row['borrower_details']) ?? {};
+    const amountRaw = row['loan_amount'] ?? row['principal_amount'] ?? row['amount'];
+    const amount = typeof amountRaw === 'number' || typeof amountRaw === 'string'
+      ? Number(amountRaw)
+      : NaN;
+    return {
+      loanId: stringValue(row, ['loan_id', 'id'], 'unknown'),
+      requestId: stringValue(row, ['request_id']),
+      requestCode: stringValue(row, ['request_code', 'application_code'], 'Loan'),
+      borrowerName: nullableString(row, ['borrower_name', 'recipient_label', 'full_name'])
+        ?? nullableString(borrowerDetails, ['borrower_name', 'full_name', 'name']),
+      courseName: nullableString(row, ['course_name'])
+        ?? nullableString(borrowerDetails, ['course_name', 'course']),
+      academicYear: nullableString(row, ['academic_year'])
+        ?? nullableString(borrowerDetails, ['academic_year', 'year_of_study']),
+      whatsappNumber: nullableString(row, ['whatsapp_number', 'phone_number'])
+        ?? nullableString(borrowerDetails, ['whatsapp_number', 'phone_number']),
+      amount: Number.isFinite(amount) ? amount : null,
+      dueDate: nullableString(row, ['due_date']),
+      status: stringValue(row, ['status', 'loan_status'], 'APPROVED'),
+      approvedAt: nullableString(row, ['approved_at', 'created_at']),
+    };
+  }
+
+  private requireAdminAccessToken(): string {
+    if (!this.accessToken || !this.adminUser()) {
+      throw new Error('Sign in with an active PJVault administrator account to continue.');
+    }
+    return this.accessToken;
+  }
+
   private async edgeRequest(
     functionName: string,
     body: Record<string, unknown>,
     bearerToken?: string,
   ): Promise<unknown> {
+    const result = await this.edgeRequestWithStatus(functionName, body, bearerToken);
+    return result.body;
+  }
+
+  private async edgeRequestWithStatus(
+    functionName: string,
+    body: Record<string, unknown>,
+    bearerToken?: string,
+  ): Promise<{ body: unknown; status: number }> {
     const config = await this.loadConfig();
     const headers = new Headers({
       apikey: config.supabasePublishableKey,
@@ -907,11 +1210,11 @@ export class BackendService {
         }
         const reason = borrowerSessionFailureReason(details.code);
         if (bearerToken && reason) this.invalidateBorrowerSession(reason);
-        throw new BorrowerApiError(details.message, details.code);
+        throw new BorrowerApiError(details.message, details.code, response.status);
       }
-      throw new Error(details.message);
+      throw new BackendHttpError(details.message, response.status, details.code);
     }
-    return response.json();
+    return { body: await response.json(), status: response.status };
   }
 
   private async putFile(

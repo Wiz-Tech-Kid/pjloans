@@ -87,6 +87,39 @@ describe('BackendService', () => {
     expect(backend.adminUser()).toBeNull();
   });
 
+  it('loads every page of administrator requests instead of dropping older rows after 100', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse(Array.from({ length: 100 }, (_, index) => ({
+        request_id: `request-${index}`,
+        request_code: `PV-${index}`,
+        status: 'SUBMITTED',
+      }))))
+      .mockResolvedValueOnce(jsonResponse([{
+        request_id: 'request-retgfbv',
+        request_code: 'retgfbv',
+        status: 'SUBMITTED',
+      }]));
+    const backend = TestBed.inject(BackendService);
+    backend.config.set(config);
+    Reflect.set(backend, 'accessToken', 'admin-jwt');
+    backend.adminUser.set({ id: 'admin-id', email: 'admin@example.com', name: 'Admin' });
+
+    await backend.loadAdminRequests();
+
+    expect(backend.requests()).toHaveLength(101);
+    expect(backend.requests().at(-1)?.requestCode).toBe('retgfbv');
+    expect(JSON.parse(String(fetchSpy.mock.calls[0]?.[1]?.body))).toMatchObject({
+      action: 'list_requests',
+      limit: 100,
+      offset: 0,
+    });
+    expect(JSON.parse(String(fetchSpy.mock.calls[1]?.[1]?.body))).toMatchObject({
+      action: 'list_requests',
+      limit: 100,
+      offset: 100,
+    });
+  });
+
   it('creates a PJVault link with the documented admin request action', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(jsonResponse({
@@ -138,6 +171,165 @@ describe('BackendService', () => {
     const url = new URL(link.url);
     expect(url.searchParams.get('token')).toBe('a'.repeat(64));
     expect(link.requestId).toBe('11111111-1111-4111-8111-111111111111');
+  });
+
+  it('loads borrower application details, reviews documents, and approves with loan terms', async () => {
+    const requestId = '11111111-1111-4111-8111-111111111111';
+    const documentId = '22222222-2222-4222-8222-222222222222';
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({
+        access_token: 'admin-jwt',
+        refresh_token: 'admin-refresh-token',
+        token_type: 'bearer',
+        expires_in: 3600,
+        user: { id: 'auth-response-id', email: 'admin@example.com' },
+      }))
+      .mockResolvedValueOnce(jsonResponse({ id: 'admin-id', email: 'admin@example.com' }))
+      .mockResolvedValueOnce(jsonResponse([{ user_id: 'admin-id', app_role: 'ADMIN', account_status: 'ACTIVE' }]))
+      .mockResolvedValueOnce(jsonResponse([]))
+      .mockResolvedValueOnce(jsonResponse({
+        application: {
+          request_id: requestId,
+          request_code: 'PV-EXAMPLE',
+          application_status: 'SUBMITTED',
+          borrower_details_submitted: true,
+          borrower_details: {
+            whatsapp_number: '+26770000000',
+            course_name: 'Computer Engineering',
+            academic_year: 'Year 4',
+          },
+          documents: [{
+            document_id: documentId,
+            document_type: 'STUDENT_ID',
+            original_filename: 'student-id.pdf',
+            mime_type: 'application/pdf',
+            review_status: 'PENDING',
+          }],
+        },
+      }))
+      .mockResolvedValueOnce(jsonResponse({ document_id: documentId, review_status: 'ACCEPTED' }))
+      .mockResolvedValueOnce(jsonResponse({ decision: 'APPROVED' }))
+      .mockResolvedValueOnce(jsonResponse({
+        url: 'https://storage.example/private-document?X-Amz-Signature=temporary',
+        expires_in_seconds: 60,
+      }));
+    const backend = TestBed.inject(BackendService);
+    backend.config.set(config);
+    await backend.signInAdmin('admin@example.com', 'password');
+
+    const application = await backend.loadAdminApplication(requestId);
+    expect(application).toMatchObject({
+      requestId,
+      requestCode: 'PV-EXAMPLE',
+      status: 'SUBMITTED',
+      borrowerDetailsSubmitted: true,
+      borrowerDetails: {
+        whatsappNumber: '+26770000000',
+        courseName: 'Computer Engineering',
+        academicYear: 'Year 4',
+      },
+      documents: [{
+        documentId,
+        documentType: 'STUDENT_ID',
+        fileName: 'student-id.pdf',
+        mimeType: 'application/pdf',
+        reviewStatus: 'PENDING',
+      }],
+    });
+
+    await backend.reviewAdminDocument(documentId, 'ACCEPTED', 'Verified');
+    await backend.approveAdminApplication(requestId, 25000, '2027-06-30', 'Approved after verification');
+    const preview = await backend.createAdminDocumentPreview(documentId, 'preview-operation');
+    expect(preview).toMatchObject({
+      url: 'https://storage.example/private-document?X-Amz-Signature=temporary',
+      expiresInSeconds: 60,
+      httpStatus: 200,
+      operationId: 'preview-operation',
+    });
+    expect(preview.expiresAt).toBeGreaterThan(Date.now());
+
+    expect(JSON.parse(String(fetchSpy.mock.calls[4]?.[1]?.body))).toEqual({
+      action: 'get_application',
+      request_id: requestId,
+    });
+    expect(JSON.parse(String(fetchSpy.mock.calls[5]?.[1]?.body))).toEqual({
+      action: 'review_document',
+      document_id: documentId,
+      decision: 'ACCEPTED',
+      note: 'Verified',
+    });
+    expect(JSON.parse(String(fetchSpy.mock.calls[6]?.[1]?.body))).toEqual({
+      action: 'approve_application',
+      request_id: requestId,
+      loan_amount: 25000,
+      due_date: '2027-06-30',
+      decision_note: 'Approved after verification',
+    });
+    expect(JSON.parse(String(fetchSpy.mock.calls[7]?.[1]?.body))).toEqual({
+      document_id: documentId,
+    });
+    for (const index of [4, 5, 6, 7]) {
+      const request = fetchSpy.mock.calls[index]?.[1] as RequestInit;
+      const headers = new Headers(request.headers);
+      expect(headers.get('authorization')).toBe('Bearer admin-jwt');
+      expect(headers.get('apikey')).toBe(config.supabasePublishableKey);
+    }
+    expect(fetchSpy.mock.calls[7]?.[0]).toBe(
+      'https://pjvault.example.supabase.co/functions/v1/pjvault-admin-view-url',
+    );
+  });
+
+  it('loads approved loan rows from the admin loans action', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(jsonResponse({
+        access_token: 'admin-jwt',
+        refresh_token: 'admin-refresh-token',
+        token_type: 'bearer',
+        expires_in: 3600,
+        user: { id: 'auth-response-id', email: 'admin@example.com' },
+      }))
+      .mockResolvedValueOnce(jsonResponse({ id: 'admin-id', email: 'admin@example.com' }))
+      .mockResolvedValueOnce(jsonResponse([{ user_id: 'admin-id', app_role: 'ADMIN', account_status: 'ACTIVE' }]))
+      .mockResolvedValueOnce(jsonResponse([]))
+      .mockResolvedValueOnce(jsonResponse({
+        loans: [{
+          loan_id: '33333333-3333-4333-8333-333333333333',
+          request_id: '11111111-1111-4111-8111-111111111111',
+          request_code: 'PV-EXAMPLE',
+          borrower_details: {
+            full_name: 'Sample Borrower',
+            whatsapp_number: '+26770000000',
+            course_name: 'Computer Engineering',
+            academic_year: 'Year 4',
+          },
+          loan_amount: 25000,
+          due_date: '2027-06-30',
+          status: 'ACTIVE',
+        }],
+      }));
+    const backend = TestBed.inject(BackendService);
+    backend.config.set(config);
+    await backend.signInAdmin('admin@example.com', 'password');
+    await backend.loadAdminLoans();
+
+    expect(backend.loans()).toEqual([{
+      loanId: '33333333-3333-4333-8333-333333333333',
+      requestId: '11111111-1111-4111-8111-111111111111',
+      requestCode: 'PV-EXAMPLE',
+      borrowerName: 'Sample Borrower',
+      courseName: 'Computer Engineering',
+      academicYear: 'Year 4',
+      whatsappNumber: '+26770000000',
+      amount: 25000,
+      dueDate: '2027-06-30',
+      status: 'ACTIVE',
+      approvedAt: null,
+    }]);
+    expect(JSON.parse(String(fetchSpy.mock.calls[4]?.[1]?.body))).toEqual({
+      action: 'list_loans',
+      limit: 100,
+      offset: 0,
+    });
   });
 
   it('sets link expiry through the authenticated Supabase RPC and returns its expiry', async () => {
@@ -418,7 +610,7 @@ describe('BackendService', () => {
       .mockResolvedValueOnce(jsonResponse({
         intent_id: '22222222-2222-4222-8222-222222222222',
         request_id: '11111111-1111-4111-8111-111111111111',
-        upload_url: 'https://storage.example/upload',
+        upload_url: 'https://storage.example/upload?X-Amz-Signature=test&X-Amz-Credential=test&X-Amz-Date=20261116T000000Z&X-Amz-Expires=300',
         required_headers: { 'Content-Type': 'application/pdf' },
       }))
       .mockResolvedValueOnce(jsonResponse({
@@ -464,7 +656,9 @@ describe('BackendService', () => {
     ]);
 
     expect(fetchSpy).toHaveBeenCalledTimes(3);
-    expect(uploadedUrls).toEqual(['https://storage.example/upload']);
+    expect(uploadedUrls).toEqual([
+      'https://storage.example/upload?X-Amz-Signature=test&X-Amz-Credential=test&X-Amz-Date=20261116T000000Z&X-Amz-Expires=300',
+    ]);
     expect(JSON.parse(String(fetchSpy.mock.calls[0]?.[1]?.body))).toEqual({
       action: 'exchange_token',
       token: 'a'.repeat(64),
@@ -527,7 +721,7 @@ describe('BackendService', () => {
       .mockResolvedValueOnce(jsonResponse({
         intent_id: '22222222-2222-4222-8222-222222222222',
         request_id: requestId,
-        upload_url: 'https://storage.example/upload/first',
+        upload_url: 'https://storage.example/upload/first?X-Amz-Signature=first&X-Amz-Credential=test&X-Amz-Date=20261116T000000Z&X-Amz-Expires=300',
         required_headers: { 'Content-Type': 'application/pdf' },
       }))
       .mockResolvedValueOnce(jsonResponse({
@@ -537,7 +731,7 @@ describe('BackendService', () => {
       .mockResolvedValueOnce(jsonResponse({
         intent_id: '44444444-4444-4444-8444-444444444444',
         request_id: requestId,
-        upload_url: 'https://storage.example/upload/retry',
+        upload_url: 'https://storage.example/upload/retry?X-Amz-Signature=retry&X-Amz-Credential=test&X-Amz-Date=20261116T000000Z&X-Amz-Expires=300',
         required_headers: { 'Content-Type': 'application/pdf' },
       }))
       .mockResolvedValueOnce(jsonResponse({
@@ -578,8 +772,8 @@ describe('BackendService', () => {
     expect(JSON.stringify(warnSpy.mock.calls)).not.toContain('a'.repeat(64));
     expect(JSON.stringify(warnSpy.mock.calls)).not.toContain('b'.repeat(64));
     expect(uploadedUrls).toEqual([
-      'https://storage.example/upload/first',
-      'https://storage.example/upload/retry',
+      'https://storage.example/upload/first?X-Amz-Signature=first&X-Amz-Credential=test&X-Amz-Date=20261116T000000Z&X-Amz-Expires=300',
+      'https://storage.example/upload/retry?X-Amz-Signature=retry&X-Amz-Credential=test&X-Amz-Date=20261116T000000Z&X-Amz-Expires=300',
     ]);
     expect(fetchSpy).toHaveBeenCalledTimes(5);
     expect(JSON.parse(String((fetchSpy.mock.calls[2]?.[1] as RequestInit).body))).toEqual({

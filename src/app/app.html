@@ -200,7 +200,8 @@
       <nav class="admin-nav">
         <button type="button" [class.is-active]="adminView() === 'home'" (click)="openHome()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z" /></svg><span>Home</span></button>
         <button type="button" [class.is-active]="adminView() === 'requests'" (click)="openRequests()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5h8l4 4V20.5H6zM14 3.5v4h4M9 12h6M9 16h6" /></svg><span>Requests</span><b>{{ backend.requests().length || '—' }}</b></button>
-        <button type="button" [class.is-active]="adminView() === 'archive'" (click)="openArchive()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4zM7 8h10M7 12h10M7 16h6" /></svg><span>Document archive</span><b>{{ archiveEntries().length || '—' }}</b></button>
+        <button type="button" [class.is-active]="adminView() === 'review'" (click)="openReviewQueue()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4zM7 8h10M7 12h10M7 16h6" /></svg><span>Review submissions</span><b>{{ reviewQueueRequests().length || '—' }}</b></button>
+        <button type="button" [class.is-active]="adminView() === 'loans'" (click)="openLoans()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v12H4zM8 10h8M8 14h5" /></svg><span>Loans</span><b>{{ backend.loans().length || '—' }}</b></button>
         <button type="button" [class.is-active]="adminView() === 'create'" (click)="openCreateLink()"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg><span>Create request</span></button>
       </nav>
       <div class="admin-sidebar__bottom"><div class="sidebar-callout"><span class="sidebar-callout__symbol">✦</span><div><strong>Private workspace</strong><small>Borrowers receive temporary links only.</small></div></div><div class="admin-account"><span class="account-avatar">{{ (backend.adminUser()?.name || 'AD').slice(0, 2).toUpperCase() }}</span><span><strong>{{ backend.adminUser()?.name || 'Administrator' }}</strong><small>Admin account</small></span><button type="button" (click)="signOut()" aria-label="Sign out">↗</button></div></div>
@@ -212,7 +213,8 @@
       <nav class="admin-page__nav" aria-label="Administrator navigation">
         <button type="button" [class.is-active]="adminView() === 'home'" (click)="openHome()">Home</button>
         <button type="button" [class.is-active]="adminView() === 'requests'" (click)="openRequests()">Requests</button>
-        <button type="button" [class.is-active]="adminView() === 'archive'" (click)="openArchive()">Archive</button>
+        <button type="button" [class.is-active]="adminView() === 'review'" (click)="openReviewQueue()">Review</button>
+        <button type="button" [class.is-active]="adminView() === 'loans'" (click)="openLoans()">Loans</button>
         <button type="button" [class.is-active]="adminView() === 'create'" (click)="openCreateLink()">Create request</button>
       </nav>
       <div class="admin-page__account">
@@ -378,6 +380,9 @@
               <div><strong>{{ request.recipientLabel || request.requestCode }}</strong><small>{{ request.requestCode }}{{ request.externalReference ? ' · ' + request.externalReference : '' }}</small></div>
               <span class="state-pill" [class]="'state-pill--' + request.status.toLowerCase()">{{ request.status.replaceAll('_', ' ') }}</span>
               <small class="request-expiry-date">Expires {{ shortDate(request.expiresAt) }}</small>
+              @if (request.borrowerDetailsSubmitted || request.submissionComplete || ['SUBMITTED', 'PENDING_REVIEW', 'UNDER_REVIEW'].includes(request.status.toUpperCase())) {
+                <button class="button button--outline request-review-button" type="button" (click)="openApplication(request)">Review submission</button>
+              }
               @if (isRequestExpiryEligible(request)) {
                 <div class="request-expiry-actions">
                   @if (expiryEditorRequestId() !== request.requestId) {
@@ -436,16 +441,194 @@
           }
         </div>
       </section>
+    } @else if (adminView() === 'review') {
+      <section class="admin-panel admin-review-panel" aria-labelledby="review-title">
+        <div class="view-heading">
+          <div>
+            <p class="eyebrow">Borrower evidence</p>
+            <h1 id="review-title">Review submissions<span class="mint-period">.</span></h1>
+            <p>Open a submitted request to verify the borrower’s details and documents before approval.</p>
+          </div>
+          <button class="button button--outline" type="button" (click)="backend.loadAdminRequests()">Refresh queue</button>
+        </div>
+        @if (applicationLoading()) { <p class="loading-state">Loading submitted application…</p> }
+        @if (applicationError()) { <p class="inline-error" role="alert">{{ applicationError() }}</p> }
+
+        @if (selectedApplication(); as application) {
+          <div class="application-review">
+            <div class="application-review__heading">
+              <button class="text-button" type="button" (click)="closeApplication()">← Back to {{ applicationReturnView() === 'loans' ? 'loans' : applicationReturnView() === 'requests' ? 'requests' : 'submissions' }}</button>
+              <span class="state-pill" [class]="'state-pill--' + application.status.toLowerCase()">{{ application.status.replaceAll('_', ' ') }}</span>
+            </div>
+            <div class="application-review__identity">
+              <p class="eyebrow">Request {{ application.requestCode }}</p>
+              <h2>{{ application.recipientLabel || application.requestCode }}</h2>
+              <p>{{ application.borrowerDetailsSubmitted ? 'Borrower details submitted' : 'Borrower details not yet submitted' }}</p>
+            </div>
+
+            <section class="application-details" aria-labelledby="borrower-details-title">
+              <div class="section-title"><p class="eyebrow">Borrower information</p><h2 id="borrower-details-title">Submitted details</h2></div>
+              <dl class="application-details__grid">
+                <div><dt>WhatsApp number</dt><dd>{{ application.borrowerDetails.whatsappNumber || 'Not provided' }}</dd></div>
+                <div><dt>Course</dt><dd>{{ application.borrowerDetails.courseName || 'Not provided' }}</dd></div>
+                <div><dt>Academic year</dt><dd>{{ application.borrowerDetails.academicYear || 'Not provided' }}</dd></div>
+              </dl>
+            </section>
+
+            <section class="application-documents" aria-labelledby="application-documents-title">
+              <div class="section-title"><p class="eyebrow">Private evidence</p><h2 id="application-documents-title">Submitted documents</h2></div>
+              @if (documentReviewError()) { <p class="inline-error" role="alert">{{ documentReviewError() }}</p> }
+              @if (documentPreviewError()) { <p class="inline-error" role="alert">{{ documentPreviewError() }}</p> }
+              <label class="review-note-field">
+                <span>Review note <small>Optional; saved with the next document decision.</small></span>
+                <textarea name="documentReviewNote" rows="2" maxlength="2000" [(ngModel)]="documentReviewNote" [ngModelOptions]="{ standalone: true }"></textarea>
+              </label>
+              @for (document of application.documents; track document.documentId) {
+                <article class="application-document">
+                  <div class="application-document__main">
+                    <span class="file-icon" aria-hidden="true">▤</span>
+                    <div>
+                      <strong>{{ document.fileName }}</strong>
+                      <small>{{ document.documentType.replaceAll('_', ' ') }} · {{ document.required ? 'Required' : 'Optional' }} · {{ document.mimeType }}</small>
+                      @if (document.reviewNote) { <small>Review note: {{ document.reviewNote }}</small> }
+                    </div>
+                  </div>
+                  <span class="state-pill" [class]="'state-pill--' + document.reviewStatus.toLowerCase()">{{ document.reviewStatus.replaceAll('_', ' ') }}</span>
+                  <div class="application-document__actions">
+                    <button class="button button--outline" type="button" [disabled]="documentBusyId() === document.documentId" (click)="viewApplicationDocument(document)">
+                      {{ documentBusyId() === document.documentId ? 'Opening…' : 'View document' }}
+                    </button>
+                    @if (canReviewApplicationDocument(application, document)) {
+                      <button class="button button--mint" type="button" [disabled]="documentReviewBusyId() === document.documentId" (click)="reviewApplicationDocument(document, 'ACCEPTED')">
+                        {{ documentReviewBusyId() === document.documentId ? 'Saving…' : 'Accept' }}
+                      </button>
+                      <button class="button button--danger" type="button" [disabled]="documentReviewBusyId() === document.documentId" (click)="reviewApplicationDocument(document, 'REJECTED')">Reject</button>
+                    }
+                  </div>
+                </article>
+              } @empty {
+                <div class="empty-panel"><h2>No submitted documents.</h2><p>Documents appear here after the borrower uploads them.</p></div>
+              }
+            </section>
+
+            <section class="application-approval" aria-labelledby="approval-title">
+              <div class="section-title"><p class="eyebrow">Loan decision</p><h2 id="approval-title">Approve application</h2></div>
+              @if (!canApproveApplication(application)) {
+                <p class="review-gate" role="status">Approval unlocks after borrower details are submitted and every submitted document is accepted.</p>
+              } @else {
+                <div class="approval-form">
+                  <label><span>Loan amount (BWP) <b>*</b></span><input name="loanAmount" type="number" min="0.01" step="0.01" [(ngModel)]="loanAmount" /></label>
+                  <label><span>Due date <b>*</b></span><input name="loanDueDate" type="date" [(ngModel)]="loanDueDate" /></label>
+                  <label class="approval-form__note"><span>Decision note</span><textarea name="loanDecisionNote" rows="3" maxlength="2000" [(ngModel)]="loanDecisionNote"></textarea></label>
+                  @if (approvalError()) { <p class="inline-error" role="alert">{{ approvalError() }}</p> }
+                  <button class="button button--mint" type="button" [disabled]="approvalBusy()" (click)="approveApplication()">
+                    {{ approvalBusy() ? 'Approving…' : 'Approve and create loan' }} <span aria-hidden="true">→</span>
+                  </button>
+                </div>
+              }
+            </section>
+          </div>
+        } @else {
+          @if (backend.requestsLoading()) { <p class="loading-state">Loading submitted requests…</p> }
+          @if (backend.requestsError()) { <p class="inline-error" role="alert">{{ backend.requestsError() }} <button class="text-button" type="button" (click)="backend.loadAdminRequests()">Retry</button></p> }
+          <div class="review-queue">
+            @for (request of reviewQueueRequests(); track request.requestId) {
+              <article class="review-queue__row">
+                <div><strong>{{ request.recipientLabel || request.requestCode }}</strong><small>{{ request.requestCode }}{{ request.externalReference ? ' · ' + request.externalReference : '' }}</small></div>
+                <span class="state-pill" [class]="'state-pill--' + request.status.toLowerCase()">{{ request.status.replaceAll('_', ' ') }}</span>
+                <small>{{ request.submittedAt ? shortDate(request.submittedAt) : 'Submission received' }}</small>
+                <button class="button button--outline" type="button" (click)="openApplication(request)">Review details and documents</button>
+              </article>
+            } @empty {
+              @if (!backend.requestsLoading()) {
+                <div class="empty-panel"><span>⌕</span><h2>No submissions ready for review.</h2><p>Requests appear here after a borrower submits their details.</p></div>
+              }
+            }
+          </div>
+        }
+      </section>
     } @else {
-      <section class="admin-panel" aria-labelledby="archive-title">
-        <div class="view-heading"><div><p class="eyebrow">Evidence and history</p><h1 id="archive-title">Document archive<span class="mint-period">.</span></h1><p>See the document requirements attached to each live request.</p></div><button class="button button--outline" type="button" (click)="openRequests()">View requests</button></div>
-        <div class="archive-summary"><article><span>Required document slots</span><strong>{{ archiveEntries().length }}</strong></article><article><span>Requests with checklists</span><strong>{{ backend.requests().length }}</strong></article><article><span>Review source</span><strong>PJVault</strong></article></div>
-        <div class="archive-table">
-          @for (entry of archiveEntries(); track entry.requestCode + entry.documentType) {
-            <div class="archive-table__row"><span class="file-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5h8l4 4V20.5H6zM14 3.5v4h4M9 12h6M9 16h4" /></svg></span><div><strong>{{ entry.documentType.replaceAll('_', ' ') }}</strong><small>{{ entry.requestCode }}</small></div><span class="state-pill" [class]="'state-pill--' + entry.status.toLowerCase()">{{ entry.status.replaceAll('_', ' ') }}</span></div>
-          } @empty { <div class="empty-panel"><span>⌕</span><h2>No archive records yet.</h2><p>Create a request to attach the standard document checklist.</p></div> }
+      <section class="admin-panel" aria-labelledby="loans-title">
+        <div class="view-heading">
+          <div><p class="eyebrow">Approved applications</p><h1 id="loans-title">Loans<span class="mint-period">.</span></h1><p>Track approved borrowers and the terms set when each loan was created.</p></div>
+          <button class="button button--outline" type="button" (click)="backend.loadAdminLoans()">Refresh loans</button>
+        </div>
+        @if (approvalSuccess()) { <p class="success-message" role="status">{{ approvalSuccess() }}</p> }
+        @if (backend.loansLoading()) { <p class="loading-state">Loading loans…</p> }
+        @if (backend.loansError()) { <p class="inline-error" role="alert">{{ backend.loansError() }}</p> }
+        <div class="loans-table">
+          <div class="loans-table__head"><span>Borrower</span><span>Course / year</span><span>Approved amount</span><span>Due date</span><span>Status</span><span></span></div>
+          @for (loan of backend.loans(); track loan.loanId) {
+            <article class="loans-table__row">
+              <div><strong>{{ loan.borrowerName || loan.requestCode }}</strong><small>{{ loan.requestCode }} · {{ loan.whatsappNumber || 'No WhatsApp number' }}</small></div>
+              <div><strong>{{ loan.courseName || '—' }}</strong><small>{{ loan.academicYear || '—' }}</small></div>
+              <strong>{{ formatLoanAmount(loan.amount) }}</strong>
+              <span>{{ loan.dueDate ? shortDate(loan.dueDate) : '—' }}</span>
+              <span class="state-pill" [class]="'state-pill--' + loan.status.toLowerCase()">{{ loan.status.replaceAll('_', ' ') }}</span>
+              @if (loan.requestId) { <button class="text-button" type="button" (click)="openApplication(loan.requestId)">View borrower file <span>↗</span></button> } @else { <span>—</span> }
+            </article>
+          } @empty {
+            @if (!backend.loansLoading() && !backend.loansError()) {
+              <div class="empty-panel"><span>⌕</span><h2>No approved loans yet.</h2><p>Applications appear here after an administrator approves them.</p><button class="button button--outline" type="button" (click)="openReviewQueue()">Review submissions</button></div>
+            }
+          }
         </div>
       </section>
+    }
+
+    @if (documentPreview(); as preview) {
+      <div class="document-preview__backdrop" role="presentation" (click)="closeDocumentPreview()">
+        <section class="document-preview" role="dialog" aria-modal="true" [attr.aria-label]="'Document preview: ' + preview.fileName" (click)="$event.stopPropagation()">
+          <header>
+            <div><p class="eyebrow">Secure document preview</p><h2>{{ preview.fileName }}</h2></div>
+            <button class="button button--ghost" type="button" aria-label="Close preview" (click)="closeDocumentPreview()">Close</button>
+          </header>
+          @if (preview.kind === 'image' || preview.kind === 'pdf') {
+            <div class="document-preview__viewport" [class.document-preview__viewport--pdf]="preview.kind === 'pdf'">
+              @if (preview.loading) {
+                <p class="document-preview__loading" role="status">Loading secure preview…</p>
+              }
+              @if (preview.errorMessage) {
+                <div class="document-preview__error" role="alert">
+                  <p>{{ preview.errorMessage }}</p>
+                  <button class="button button--outline" type="button" (click)="refreshDocumentPreview()">Refresh preview</button>
+                </div>
+              } @else if (preview.kind === 'image') {
+                <img
+                  class="document-preview__image"
+                  [class.document-preview__image--loaded]="preview.loaded"
+                  [class.document-preview__image--zoomed]="preview.zoomed"
+                  [src]="preview.url"
+                  [alt]="preview.fileName"
+                  (load)="onPreviewImageLoad($event, preview.operationId)"
+                  (error)="onPreviewImageError(preview.operationId)"
+                />
+              } @else {
+                <iframe
+                  class="document-preview__pdf"
+                  [src]="preview.safePdfUrl"
+                  [title]="'PDF preview: ' + preview.fileName"
+                  (load)="onPdfPreviewLoad(preview.operationId)"
+                  (error)="onPdfPreviewError(preview.operationId)"
+                ></iframe>
+              }
+            </div>
+            @if (preview.kind === 'image' && preview.loaded && !preview.errorCode) {
+              <button
+                class="button button--outline document-preview__zoom"
+                type="button"
+                [attr.aria-pressed]="preview.zoomed"
+                (click)="toggleDocumentPreviewZoom()"
+              >{{ preview.zoomed ? 'Fit image' : 'Zoom image' }}</button>
+            }
+          } @else {
+            <div class="document-preview__viewport">
+              <p>This file type cannot be previewed inline. <a [href]="preview.url" target="_blank" rel="noopener noreferrer">Open document</a></p>
+            </div>
+          }
+          <p class="document-preview__expiry">This private preview link expires shortly. Reopen the document for a fresh link.</p>
+        </section>
+      </div>
     }
     <footer class="login-footer"><span>PJVault operations</span><span>Admin request creation is authorized by PJVault.</span></footer>
   </main>

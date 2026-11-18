@@ -1,8 +1,12 @@
 import { CommonModule, isPlatformBrowser } from '@angular/common';
-import { Component, PLATFORM_ID, effect, inject, signal } from '@angular/core';
+import { Component, OnDestroy, PLATFORM_ID, effect, inject, isDevMode, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
 import {
+  AdminDocumentPreviewError,
   BackendService,
+  AdminApplication,
+  AdminApplicationDocument,
   AdminRequestRecord,
   BorrowerApiError,
   BorrowerLinkExchangeError,
@@ -14,7 +18,7 @@ import {
 
 type Theme = 'dark' | 'light';
 type Screen = 'login' | 'admin' | 'borrower';
-type AdminView = 'home' | 'requests' | 'archive' | 'create';
+type AdminView = 'home' | 'requests' | 'review' | 'loans' | 'create';
 type UploadState = 'idle' | 'uploading' | 'finalized' | 'error';
 
 interface RequirementForm {
@@ -34,12 +38,38 @@ interface UploadSlot extends PjVaultRequirement {
   error: string;
 }
 
+type DocumentPreviewKind = 'image' | 'pdf' | 'other';
+type DocumentPreviewDiagnosticCode =
+  | 'VIEW_URL_FAILED'
+  | 'DOCUMENT_FETCH_FAILED'
+  | 'IMAGE_DECODE_FAILED'
+  | 'PDF_PREVIEW_FAILED'
+  | 'VIEW_URL_EXPIRED';
+
+interface DocumentPreviewState {
+  documentId: string;
+  operationId: string;
+  url: string;
+  safePdfUrl: SafeResourceUrl | null;
+  fileName: string;
+  mimeType: string;
+  kind: DocumentPreviewKind;
+  expiresAt: number;
+  httpStatus: number | null;
+  loading: boolean;
+  loaded: boolean;
+  zoomed: boolean;
+  errorCode: DocumentPreviewDiagnosticCode | null;
+  errorMessage: string | null;
+}
+
 const FILE_TYPES = [
   { value: 'application/pdf', label: 'PDF' },
   { value: 'image/jpeg', label: 'JPG' },
   { value: 'image/png', label: 'PNG' },
 ];
 const MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024;
+const DOCUMENT_PREVIEW_LOAD_TIMEOUT_MS = 15_000;
 const MAX_LINK_TTL_MINUTES = 43_200;
 const LINK_TTL_PRESETS = [
   { value: '15', label: '15 minutes (default)' },
@@ -58,9 +88,13 @@ const LINK_TTL_PRESETS = [
   templateUrl: './app.html',
   styleUrl: './app.css',
 })
-export class App {
+export class App implements OnDestroy {
   readonly backend = inject(BackendService);
   private readonly platformId = inject(PLATFORM_ID);
+  private readonly sanitizer = inject(DomSanitizer);
+  private previewOperationSequence = 0;
+  private activePreviewOperationId: string | null = null;
+  private previewExpiryTimer: ReturnType<typeof setTimeout> | null = null;
 
   readonly theme = signal<Theme>(this.initialTheme());
   readonly screen = signal<Screen>('login');
@@ -73,7 +107,27 @@ export class App {
   readonly requestExpirySuccess = signal<Record<string, string>>({});
   readonly generatedLink = signal<{ url: string; expiresAt: string } | null>(null);
   readonly pageMessage = signal('');
+  readonly selectedApplication = signal<AdminApplication | null>(null);
+  readonly applicationLoading = signal(false);
+  readonly applicationError = signal('');
+  readonly documentPreview = signal<DocumentPreviewState | null>(null);
+  readonly documentPreviewError = signal('');
+  readonly documentBusyId = signal<string | null>(null);
+  readonly documentReviewBusyId = signal<string | null>(null);
+  readonly documentReviewError = signal('');
+  readonly approvalBusy = signal(false);
+  readonly approvalError = signal('');
+  readonly approvalSuccess = signal('');
+  readonly applicationReturnView = signal<'requests' | 'review' | 'loans'>('review');
   readonly linkTtlPresets = LINK_TTL_PRESETS;
+  documentReviewNote = '';
+  loanAmount = 0;
+  loanDueDate = '';
+  loanDecisionNote = '';
+
+  ngOnDestroy(): void {
+    this.closeDocumentPreview();
+  }
 
   loginEmail = '';
   loginPassword = '';
@@ -167,25 +221,422 @@ export class App {
 
   openHome(): void {
     this.adminView.set('home');
+    this.selectedApplication.set(null);
     this.pageMessage.set('');
     this.mobileNavOpen.set(false);
   }
 
   openCreateLink(): void {
     this.adminView.set('create');
+    this.selectedApplication.set(null);
     this.mobileNavOpen.set(false);
   }
 
   openRequests(): void {
     this.adminView.set('requests');
+    this.selectedApplication.set(null);
     this.mobileNavOpen.set(false);
     void this.backend.loadAdminRequests();
   }
 
-  openArchive(): void {
-    this.adminView.set('archive');
+  openReviewQueue(): void {
+    this.adminView.set('review');
+    this.selectedApplication.set(null);
     this.mobileNavOpen.set(false);
     void this.backend.loadAdminRequests();
+  }
+
+  openLoans(): void {
+    this.adminView.set('loans');
+    this.selectedApplication.set(null);
+    this.mobileNavOpen.set(false);
+    void this.backend.loadAdminLoans();
+  }
+
+  async openApplication(request: AdminRequestRecord | string): Promise<void> {
+    const requestId = typeof request === 'string' ? request : request.requestId;
+    const currentView = this.adminView();
+    this.applicationReturnView.set(currentView === 'loans' || currentView === 'requests' ? currentView : 'review');
+    this.adminView.set('review');
+    this.selectedApplication.set(null);
+    this.applicationLoading.set(true);
+    this.applicationError.set('');
+    this.approvalError.set('');
+    this.approvalSuccess.set('');
+    this.documentReviewNote = '';
+    this.loanAmount = 0;
+    this.loanDueDate = '';
+    this.loanDecisionNote = '';
+    this.mobileNavOpen.set(false);
+    try {
+      this.selectedApplication.set(await this.backend.loadAdminApplication(requestId));
+    } catch (error) {
+      this.applicationError.set(error instanceof Error ? error.message : 'Application details could not be loaded.');
+    } finally {
+      this.applicationLoading.set(false);
+    }
+  }
+
+  closeApplication(): void {
+    this.selectedApplication.set(null);
+    this.applicationError.set('');
+    this.documentReviewError.set('');
+    const returnView = this.applicationReturnView();
+    this.adminView.set(returnView);
+    if (returnView === 'loans') void this.backend.loadAdminLoans();
+    else void this.backend.loadAdminRequests();
+  }
+
+  canApproveApplication(application: AdminApplication): boolean {
+    return ['SUBMITTED', 'PENDING_REVIEW', 'UNDER_REVIEW'].includes(application.status.toUpperCase())
+      && application.borrowerDetailsSubmitted
+      && application.documents.length > 0
+      && application.documents.every((document) => document.reviewStatus.toUpperCase() === 'ACCEPTED');
+  }
+
+  canReviewApplicationDocument(application: AdminApplication, document: AdminApplicationDocument): boolean {
+    return ['SUBMITTED', 'PENDING_REVIEW', 'UNDER_REVIEW'].includes(application.status.toUpperCase())
+      && document.reviewStatus.toUpperCase() === 'PENDING';
+  }
+
+  async viewApplicationDocument(document: AdminApplicationDocument): Promise<void> {
+    this.closeDocumentPreview();
+    const operationId = this.nextPreviewOperationId();
+    this.activePreviewOperationId = operationId;
+    this.documentBusyId.set(document.documentId);
+    this.documentPreviewError.set('');
+    try {
+      const preview = await this.backend.createAdminDocumentPreview(
+        document.documentId,
+        operationId,
+      );
+      if (this.activePreviewOperationId !== operationId) return;
+      const kind = this.documentPreviewKind(document.mimeType, document.fileName);
+      this.documentPreview.set({
+        documentId: document.documentId,
+        operationId,
+        url: preview.url,
+        safePdfUrl: kind === 'pdf'
+          ? this.sanitizer.bypassSecurityTrustResourceUrl(preview.url)
+          : null,
+        fileName: document.fileName,
+        mimeType: document.mimeType,
+        kind,
+        expiresAt: preview.expiresAt,
+        httpStatus: preview.httpStatus,
+        loading: kind !== 'other',
+        loaded: kind === 'other',
+        zoomed: false,
+        errorCode: null,
+        errorMessage: null,
+      });
+      this.logDocumentPreviewDiagnostic('VIEW_URL_RECEIVED', {
+        documentId: document.documentId,
+        mimeType: document.mimeType,
+        operationId,
+        urlReceived: true,
+        httpStatus: preview.httpStatus,
+      });
+      this.startPreviewExpiryTimer(operationId, preview.expiresAt);
+    } catch (error) {
+      const diagnosticCode = error instanceof AdminDocumentPreviewError
+        ? error.diagnosticCode
+        : 'VIEW_URL_FAILED';
+      const httpStatus = error instanceof AdminDocumentPreviewError ? error.httpStatus : null;
+      this.logDocumentPreviewDiagnostic(diagnosticCode, {
+        documentId: document.documentId,
+        mimeType: document.mimeType,
+        operationId,
+        urlReceived: false,
+        httpStatus,
+      });
+      if (this.activePreviewOperationId !== operationId) return;
+      this.documentPreviewError.set(error instanceof Error ? error.message : 'The document preview could not be opened.');
+    } finally {
+      if (
+        this.activePreviewOperationId === operationId &&
+        this.documentBusyId() === document.documentId
+      ) this.documentBusyId.set(null);
+    }
+  }
+
+  closeDocumentPreview(): void {
+    this.activePreviewOperationId = null;
+    this.documentBusyId.set(null);
+    this.clearPreviewExpiryTimer();
+    this.documentPreview.set(null);
+  }
+
+  refreshDocumentPreview(): void {
+    const preview = this.documentPreview();
+    const document = this.selectedApplication()?.documents.find(
+      (item) => item.documentId === preview?.documentId,
+    );
+    if (document) void this.viewApplicationDocument(document);
+  }
+
+  toggleDocumentPreviewZoom(): void {
+    this.documentPreview.update((preview) => (
+      preview?.kind === 'image' && preview.loaded
+        ? { ...preview, zoomed: !preview.zoomed }
+        : preview
+    ));
+  }
+
+  onPreviewImageLoad(event: Event, operationId: string): void {
+    const image = event.currentTarget;
+    if (!(image instanceof HTMLImageElement) || !this.isCurrentPreview(operationId)) return;
+    void Promise.resolve()
+      .then(() => image.decode?.())
+      .then(() => {
+        const preview = this.documentPreview();
+        if (!preview || preview.operationId !== operationId) return;
+        this.documentPreview.set({ ...preview, loading: false, loaded: true, errorCode: null, errorMessage: null });
+        this.clearPreviewExpiryTimer();
+        this.logDocumentPreviewDiagnostic('IMAGE_LOAD_SUCCEEDED', {
+          documentId: preview.documentId,
+          mimeType: preview.mimeType,
+          operationId,
+          urlReceived: true,
+          httpStatus: this.previewResponseStatus(preview.url),
+          imageLoad: 'success',
+        });
+      })
+      .catch(() => this.failDocumentPreview(
+        operationId,
+        'IMAGE_DECODE_FAILED',
+        'The file was received, but the browser could not decode it as an image.',
+        this.previewResponseStatus(this.documentPreview()?.url),
+        'failure',
+      ));
+  }
+
+  onPreviewImageError(operationId: string): void {
+    const preview = this.documentPreview();
+    if (!preview || preview.operationId !== operationId) return;
+    const expired = Date.now() >= preview.expiresAt;
+    this.failDocumentPreview(
+      operationId,
+      expired ? 'VIEW_URL_EXPIRED' : 'DOCUMENT_FETCH_FAILED',
+      expired
+        ? 'This temporary preview URL expired. Refresh the preview to get a new secure URL.'
+        : 'The private document could not be loaded. Refresh the preview and try again.',
+      this.previewResponseStatus(preview.url),
+      'failure',
+    );
+  }
+
+  onPdfPreviewLoad(operationId: string): void {
+    const preview = this.documentPreview();
+    if (!preview || preview.operationId !== operationId) return;
+    if (Date.now() >= preview.expiresAt) {
+      this.failDocumentPreview(
+        operationId,
+        'VIEW_URL_EXPIRED',
+        'This temporary preview URL expired. Refresh the preview to get a new secure URL.',
+        this.previewResponseStatus(preview.url),
+        'failure',
+      );
+      return;
+    }
+    const responseStatus = this.previewResponseStatus(preview.url);
+    if (responseStatus !== null && responseStatus >= 400) {
+      this.failDocumentPreview(
+        operationId,
+        'PDF_PREVIEW_FAILED',
+        'The PDF viewer could not load this document. Refresh the preview and try again.',
+        responseStatus,
+        undefined,
+        'failure',
+      );
+      return;
+    }
+    this.documentPreview.set({ ...preview, loading: false, loaded: true, errorCode: null, errorMessage: null });
+    this.clearPreviewExpiryTimer();
+    this.logDocumentPreviewDiagnostic('PDF_PREVIEW_LOADED', {
+      documentId: preview.documentId,
+      mimeType: preview.mimeType,
+      operationId,
+      urlReceived: true,
+      httpStatus: responseStatus,
+      pdfLoad: 'success',
+    });
+  }
+
+  onPdfPreviewError(operationId: string): void {
+    const preview = this.documentPreview();
+    if (!preview || preview.operationId !== operationId) return;
+    const expired = Date.now() >= preview.expiresAt;
+    this.failDocumentPreview(
+      operationId,
+      expired ? 'VIEW_URL_EXPIRED' : 'PDF_PREVIEW_FAILED',
+      expired
+        ? 'This temporary preview URL expired. Refresh the preview to get a new secure URL.'
+        : 'The PDF viewer could not load this document. Refresh the preview and try again.',
+      this.previewResponseStatus(preview.url),
+      'failure',
+    );
+  }
+
+  private documentPreviewKind(mimeType: string, fileName: string): DocumentPreviewKind {
+    const mime = mimeType.toLowerCase().split(';', 1)[0].trim();
+    const extension = fileName.toLowerCase().split('.').pop() ?? '';
+    if (mime === 'application/pdf' || extension === 'pdf') return 'pdf';
+    if (
+      ['image/png', 'image/jpeg', 'image/webp'].includes(mime) ||
+      ['png', 'jpg', 'jpeg', 'webp'].includes(extension)
+    ) return 'image';
+    return 'other';
+  }
+
+  private nextPreviewOperationId(): string {
+    this.previewOperationSequence += 1;
+    return globalThis.crypto?.randomUUID?.()
+      ?? `preview-${Date.now()}-${this.previewOperationSequence}`;
+  }
+
+  private isCurrentPreview(operationId: string): boolean {
+    return this.documentPreview()?.operationId === operationId;
+  }
+
+  private startPreviewExpiryTimer(operationId: string, expiresAt: number): void {
+    this.clearPreviewExpiryTimer();
+    const delay = Math.min(
+      Math.max(0, expiresAt - Date.now()),
+      DOCUMENT_PREVIEW_LOAD_TIMEOUT_MS,
+    );
+    this.previewExpiryTimer = setTimeout(() => {
+      const preview = this.documentPreview();
+      if (!preview || preview.operationId !== operationId || !preview.loading) return;
+      const expired = Date.now() >= expiresAt;
+      const errorCode: DocumentPreviewDiagnosticCode = expired
+        ? 'VIEW_URL_EXPIRED'
+        : preview.kind === 'pdf' ? 'PDF_PREVIEW_FAILED' : 'DOCUMENT_FETCH_FAILED';
+      this.failDocumentPreview(
+        operationId,
+        errorCode,
+        expired
+          ? 'This temporary preview URL expired. Refresh the preview to get a new secure URL.'
+          : 'The document preview did not finish loading. Refresh the preview and try again.',
+        this.previewResponseStatus(preview.url),
+        preview.kind === 'image' ? 'failure' : undefined,
+        preview.kind === 'pdf' ? 'failure' : undefined,
+      );
+    }, delay);
+  }
+
+  private clearPreviewExpiryTimer(): void {
+    if (this.previewExpiryTimer !== null) clearTimeout(this.previewExpiryTimer);
+    this.previewExpiryTimer = null;
+  }
+
+  private failDocumentPreview(
+    operationId: string,
+    errorCode: DocumentPreviewDiagnosticCode,
+    errorMessage: string,
+    httpStatus: number | null,
+    imageLoad?: 'failure',
+    pdfLoad?: 'failure',
+  ): void {
+    const preview = this.documentPreview();
+    if (!preview || preview.operationId !== operationId) return;
+    this.clearPreviewExpiryTimer();
+    this.documentPreview.set({
+      ...preview,
+      loading: false,
+      loaded: false,
+      errorCode,
+      errorMessage,
+    });
+    this.logDocumentPreviewDiagnostic(errorCode, {
+      documentId: preview.documentId,
+      mimeType: preview.mimeType,
+      operationId,
+      urlReceived: true,
+      httpStatus,
+      imageLoad,
+      pdfLoad,
+    });
+  }
+
+  private previewResponseStatus(url: string | undefined): number | null {
+    if (!url || typeof performance === 'undefined') return null;
+    const entry = performance.getEntriesByName(url)
+      .find((item) => item.entryType === 'resource') as (PerformanceResourceTiming & { responseStatus?: number }) | undefined;
+    return typeof entry?.responseStatus === 'number' && entry.responseStatus > 0
+      ? entry.responseStatus
+      : null;
+  }
+
+  private logDocumentPreviewDiagnostic(
+    category: string,
+    details: {
+      documentId: string;
+      mimeType: string;
+      operationId: string;
+      urlReceived: boolean;
+      httpStatus: number | null;
+      imageLoad?: 'success' | 'failure';
+      pdfLoad?: 'success' | 'failure';
+    },
+  ): void {
+    if (!isDevMode()) return;
+    const log = category.endsWith('_FAILED') || category === 'VIEW_URL_EXPIRED' ? console.warn : console.info;
+    log('PJVault document preview diagnostic', { category, ...details });
+  }
+
+  async reviewApplicationDocument(
+    document: AdminApplicationDocument,
+    decision: 'ACCEPTED' | 'REJECTED',
+  ): Promise<void> {
+    const application = this.selectedApplication();
+    if (!application) return;
+    this.documentReviewBusyId.set(document.documentId);
+    this.documentReviewError.set('');
+    try {
+      await this.backend.reviewAdminDocument(document.documentId, decision, this.documentReviewNote);
+      this.documentReviewNote = '';
+      this.selectedApplication.set(await this.backend.loadAdminApplication(application.requestId));
+      await this.backend.loadAdminRequests();
+    } catch (error) {
+      this.documentReviewError.set(error instanceof Error ? error.message : 'The document review could not be saved.');
+    } finally {
+      this.documentReviewBusyId.set(null);
+    }
+  }
+
+  async approveApplication(): Promise<void> {
+    const application = this.selectedApplication();
+    if (!application || !this.canApproveApplication(application)) return;
+    this.approvalBusy.set(true);
+    this.approvalError.set('');
+    this.approvalSuccess.set('');
+    try {
+      await this.backend.approveAdminApplication(
+        application.requestId,
+        this.loanAmount,
+        this.loanDueDate,
+        this.loanDecisionNote,
+      );
+      this.approvalSuccess.set(`Request ${application.requestCode} was approved and added to the loans list.`);
+      await this.backend.loadAdminRequests();
+      await this.backend.loadAdminLoans();
+      this.selectedApplication.set(null);
+      this.adminView.set('loans');
+    } catch (error) {
+      this.approvalError.set(error instanceof Error ? error.message : 'The application could not be approved.');
+    } finally {
+      this.approvalBusy.set(false);
+    }
+  }
+
+  formatLoanAmount(amount: number | null): string {
+    if (amount === null) return '—';
+    return new Intl.NumberFormat(undefined, {
+      style: 'currency',
+      currency: 'BWP',
+      maximumFractionDigits: 2,
+    }).format(amount);
   }
 
   goHome(event: MouseEvent): void {
@@ -196,15 +647,15 @@ export class App {
 
   requestCount(status?: string): number {
     const requests = this.backend.requests();
-    return status ? requests.filter((request) => request.status === status).length : requests.length;
+    return status ? requests.filter((request) => request.status.toUpperCase() === status.toUpperCase()).length : requests.length;
   }
 
-  archiveEntries(): Array<{ requestCode: string; documentType: string; status: string }> {
-    return this.backend.requests().flatMap((request) => request.requirements.map((requirement) => ({
-      requestCode: request.requestCode,
-      documentType: requirement.document_type,
-      status: requirement.latest_status ?? (request.submissionComplete ? 'SUBMITTED' : 'PENDING'),
-    })));
+  reviewQueueRequests(): AdminRequestRecord[] {
+    return this.backend.requests().filter((request) => {
+      const status = request.status.toUpperCase();
+      return request.borrowerDetailsSubmitted || request.submissionComplete
+        || ['SUBMITTED', 'PENDING_REVIEW', 'UNDER_REVIEW'].includes(status);
+    });
   }
 
   addRequirement(): void {

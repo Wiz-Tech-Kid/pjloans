@@ -66,6 +66,8 @@ The admin app uses:
 
 - `POST /functions/v1/pjvault-admin-session` with the authenticated session. The function validates the JWT and calls `private.pjvault_is_active_admin()`, which enforces the PJVault membership and admin-role records. The browser never reads private authorization tables or uses a service-role key.
 - `POST /functions/v1/pjvault-admin-api` with `action: "create_request"` to create a request. Raw link tokens are returned only to form the shareable `?token=` URL.
+- The same authenticated admin API supports submitted-application details, document decisions, loan approval, and paginated loan lists. The admin workspace reviews submitted documents before enabling approval; approval records a BWP amount and due date.
+- `POST /functions/v1/pjvault-admin-view-url` issues a short-lived, audited URL for an administrator to view a private borrower document. Keep document objects private in R2; the browser receives only the temporary preview URL.
 
 Borrower exchange, request status, upload intents, R2 upload authorization, file verification/finalization, and details submission are handled by `POST /functions/v1/pjvault-borrower-api`. That function uses the PJVault `public.pjvault_borrower_*` RPCs and must be deployed with JWT verification disabled: borrower upload sessions are opaque, short-lived bearer tokens rather than Supabase Auth JWTs. Its server environment needs the existing Supabase secret-key map and the R2 endpoint, access credentials, and bucket name used by PJVault document viewing. Do not copy those values into Angular or the runtime configuration.
 

@@ -1,7 +1,13 @@
 import { TestBed } from '@angular/core/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from './app';
-import { BackendService, BorrowerLinkExchangeError, BorrowerSession } from './backend.service';
+import {
+  AdminApplication,
+  AdminApplicationDocument,
+  BackendService,
+  BorrowerLinkExchangeError,
+  BorrowerSession,
+} from './backend.service';
 
 function borrowerSession(): BorrowerSession {
   return {
@@ -27,6 +33,22 @@ function borrowerSession(): BorrowerSession {
       submitted_at: null,
       requirements: [{ document_type: 'STUDENT_ID', required: true, latest_status: null }],
     },
+  };
+}
+
+function previewDocument(
+  fileName: string,
+  mimeType: string,
+): AdminApplicationDocument {
+  return {
+    documentId: '22222222-2222-4222-8222-222222222222',
+    documentType: 'STUDENT_ID',
+    fileName,
+    mimeType,
+    reviewStatus: 'PENDING',
+    submittedAt: null,
+    reviewNote: null,
+    required: true,
   };
 }
 
@@ -164,5 +186,124 @@ describe('App', () => {
     expect(app.generatedLink()).toBeNull();
     expect(app.pageMessage()).toContain('selected link duration could not be confirmed');
     expect(app.pageMessage()).toContain('Request is closed.');
+  });
+
+  it('only enables loan approval after details and every submitted document are accepted', async () => {
+    vi.spyOn(TestBed.inject(BackendService), 'initialize').mockResolvedValue();
+    const fixture = TestBed.createComponent(App);
+    await fixture.whenStable();
+    const app = fixture.componentInstance;
+    const application: AdminApplication = {
+      requestId: '11111111-1111-4111-8111-111111111111',
+      requestCode: 'PV-EXAMPLE',
+      status: 'SUBMITTED',
+      recipientLabel: null,
+      submittedAt: null,
+      borrowerDetailsSubmitted: true,
+      borrowerDetails: { whatsappNumber: '+26770000000', courseName: 'Engineering', academicYear: 'Year 4' },
+      documents: [
+        {
+          documentId: '22222222-2222-4222-8222-222222222222',
+          documentType: 'STUDENT_ID',
+          fileName: 'student-id.pdf',
+          mimeType: 'application/pdf',
+          reviewStatus: 'ACCEPTED',
+          submittedAt: null,
+          reviewNote: null,
+          required: true,
+        },
+        {
+          documentId: '33333333-3333-4333-8333-333333333333',
+          documentType: 'OPTIONAL_DOCUMENT',
+          fileName: 'optional.pdf',
+          mimeType: 'application/pdf',
+          reviewStatus: 'PENDING',
+          submittedAt: null,
+          reviewNote: null,
+          required: false,
+        },
+      ],
+    };
+
+    expect(app.canApproveApplication(application)).toBe(false);
+    application.documents[1]!.reviewStatus = 'ACCEPTED';
+    expect(app.canApproveApplication(application)).toBe(true);
+    application.borrowerDetailsSubmitted = false;
+    expect(app.canApproveApplication(application)).toBe(false);
+  });
+
+  it.each([
+    ['image/png', 'student-id.png'],
+    ['image/jpeg', 'student-id.jpg'],
+    ['image/webp', 'student-id.webp'],
+  ])('binds the private URL and renders %s with image load tracking', async (mimeType, fileName) => {
+    vi.spyOn(TestBed.inject(BackendService), 'initialize').mockResolvedValue();
+    const fixture = TestBed.createComponent(App);
+    await fixture.whenStable();
+    const app = fixture.componentInstance;
+    const backend = TestBed.inject(BackendService);
+    const url = 'https://storage.example/private-document?X-Amz-Signature=temporary';
+    vi.spyOn(backend, 'createAdminDocumentPreview').mockResolvedValue({
+      url,
+      expiresInSeconds: 60,
+      expiresAt: Date.now() + 60_000,
+      httpStatus: 200,
+      operationId: 'service-operation',
+    });
+
+    await app.viewApplicationDocument(previewDocument(fileName, mimeType));
+
+    const preview = app.documentPreview();
+    expect(preview?.kind).toBe('image');
+    expect(preview?.url).toBe(url);
+    const image = document.createElement('img');
+    Object.defineProperty(image, 'decode', { value: () => Promise.resolve() });
+    app.onPreviewImageLoad({ currentTarget: image } as unknown as Event, preview!.operationId);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(app.documentPreview()?.loaded).toBe(true);
+    expect(app.documentPreview()?.errorCode).toBeNull();
+    app.closeDocumentPreview();
+  });
+
+  it('uses the PDF viewer, reports PDF errors distinctly, and fetches a fresh URL on reopen', async () => {
+    vi.spyOn(TestBed.inject(BackendService), 'initialize').mockResolvedValue();
+    const fixture = TestBed.createComponent(App);
+    await fixture.whenStable();
+    const app = fixture.componentInstance;
+    const backend = TestBed.inject(BackendService);
+    const document = previewDocument('student-id.pdf', 'application/pdf');
+    const previewResponse = (url: string) => ({
+      url,
+      expiresInSeconds: 60,
+      expiresAt: Date.now() + 60_000,
+      httpStatus: 200,
+      operationId: 'service-operation',
+    });
+    const createPreview = vi.spyOn(backend, 'createAdminDocumentPreview')
+      .mockResolvedValueOnce(previewResponse('https://storage.example/first.pdf?X-Amz-Signature=first'))
+      .mockResolvedValueOnce(previewResponse('https://storage.example/second.pdf?X-Amz-Signature=second'));
+    app.selectedApplication.set({
+      requestId: '11111111-1111-4111-8111-111111111111',
+      requestCode: 'PV-EXAMPLE',
+      status: 'SUBMITTED',
+      recipientLabel: null,
+      submittedAt: null,
+      borrowerDetailsSubmitted: true,
+      borrowerDetails: { whatsappNumber: '+26770000000', courseName: 'Engineering', academicYear: 'Year 4' },
+      documents: [document],
+    });
+
+    await app.viewApplicationDocument(document);
+    const firstPreview = app.documentPreview();
+    expect(firstPreview?.kind).toBe('pdf');
+    expect(firstPreview?.safePdfUrl).not.toBeNull();
+    app.onPdfPreviewError(firstPreview!.operationId);
+    expect(app.documentPreview()?.errorCode).toBe('PDF_PREVIEW_FAILED');
+    app.closeDocumentPreview();
+    await app.viewApplicationDocument(document);
+
+    expect(createPreview).toHaveBeenCalledTimes(2);
+    expect(app.documentPreview()?.url).toContain('second.pdf');
+    app.closeDocumentPreview();
   });
 });
