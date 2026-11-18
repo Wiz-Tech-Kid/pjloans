@@ -253,6 +253,24 @@ input:focus, select:focus, textarea:focus { border-color: var(--mint); box-shado
 .document-preview__error p, .document-preview__viewport > p { margin: 0; color: var(--text-2); font-size: 0.75rem; }
 .document-preview__zoom { justify-self: center; }
 .document-preview__expiry { color: var(--muted) !important; }
+.document-rejection-form { grid-column: 1 / -1; display: grid; gap: 8px; padding: 12px; border: 1px solid var(--red-soft); border-radius: 8px; background: var(--red-soft); }
+.document-rejection-form label, .document-rejection-form textarea { display: grid; gap: 6px; }
+.document-rejection-form textarea { width: 100%; resize: vertical; }
+.document-rejection-form small { color: var(--text-2); }
+.decision-mode, .loan-filters, .loan-pagination { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.lending-decision { display: grid; gap: 10px; }
+.lending-decision p { margin: 0; color: var(--text-2); }
+.loan-detail { display: grid; gap: 16px; padding: 18px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.loan-detail__heading { display: flex; justify-content: space-between; align-items: center; }
+.loan-detail__summary { display: grid; gap: 16px; }
+.loan-detail__summary dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.loan-detail__summary dl div { padding: 10px; border: 1px solid var(--border); border-radius: 7px; }
+.loan-detail__summary dt { color: var(--muted); font-size: 0.62rem; }
+.loan-detail__summary dd { margin: 5px 0 0; font-size: 0.72rem; font-weight: 700; }
+.disbursement-form, .disbursement-record { padding: 16px; border: 1px solid var(--border); border-radius: 8px; }
+.disbursement-form h3, .disbursement-record h3 { margin: 0 0 8px; }
+.disbursement-form > p, .disbursement-record p { color: var(--text-2); font-size: 0.72rem; }
+.loan-pagination { align-items: center; justify-content: flex-end; margin: 14px 0 0; }
 @media (max-width: 600px) {
   .document-preview__backdrop { padding: 10px; }
   .document-preview { height: min(92vh, 900px); gap: 10px; padding: 12px; }

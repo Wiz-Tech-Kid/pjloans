@@ -312,7 +312,7 @@ describe('BackendService', () => {
     await backend.signInAdmin('admin@example.com', 'password');
     await backend.loadAdminLoans();
 
-    expect(backend.loans()).toEqual([{
+    expect(backend.loans()).toEqual([expect.objectContaining({
       loanId: '33333333-3333-4333-8333-333333333333',
       requestId: '11111111-1111-4111-8111-111111111111',
       requestCode: 'PV-EXAMPLE',
@@ -323,11 +323,14 @@ describe('BackendService', () => {
       amount: 25000,
       dueDate: '2027-06-30',
       status: 'ACTIVE',
-      approvedAt: null,
-    }]);
+      loanStatus: 'ACTIVE',
+      currency: 'BWP',
+      disbursedAmount: null,
+    })]);
     expect(JSON.parse(String(fetchSpy.mock.calls[4]?.[1]?.body))).toEqual({
       action: 'list_loans',
-      limit: 100,
+      status: null,
+      limit: 50,
       offset: 0,
     });
   });

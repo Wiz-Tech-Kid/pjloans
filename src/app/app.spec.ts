@@ -196,7 +196,8 @@ describe('App', () => {
     const application: AdminApplication = {
       requestId: '11111111-1111-4111-8111-111111111111',
       requestCode: 'PV-EXAMPLE',
-      status: 'SUBMITTED',
+      status: 'REVIEWED',
+      requestStatus: 'REVIEWED',
       recipientLabel: null,
       submittedAt: null,
       borrowerDetailsSubmitted: true,

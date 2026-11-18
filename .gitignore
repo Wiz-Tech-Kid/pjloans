@@ -42,6 +42,7 @@ __screenshots__/
 .env
 .env.*
 !.env.example
+s.ts
 
 # System files
 .DS_Store

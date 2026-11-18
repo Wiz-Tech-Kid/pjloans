@@ -137,19 +137,39 @@ export interface AdminApplicationDocument {
   required: boolean;
 }
 
+export interface AdminDocumentCounts {
+  total: number;
+  pendingReview: number;
+  accepted: number;
+  rejected: number;
+}
+
+export interface AdminLendingDecision {
+  decision: string;
+  loanAmount: number | null;
+  dueDate: string | null;
+  decidedAt: string | null;
+  decisionNote: string | null;
+}
+
 export interface AdminApplication {
   requestId: string;
   requestCode: string;
   status: string;
+  requestStatus?: string;
   recipientLabel: string | null;
   submittedAt: string | null;
   borrowerDetailsSubmitted: boolean;
   borrowerDetails: BorrowerDetails;
   documents: AdminApplicationDocument[];
+  documentCounts?: AdminDocumentCounts;
+  lendingDecision?: AdminLendingDecision | null;
+  loan?: AdminLoanRecord | null;
 }
 
 export interface AdminLoanRecord {
   loanId: string;
+  loanReference: string;
   requestId: string;
   requestCode: string;
   borrowerName: string | null;
@@ -157,9 +177,20 @@ export interface AdminLoanRecord {
   academicYear: string | null;
   whatsappNumber: string | null;
   amount: number | null;
+  currency: string;
+  approvalDate: string | null;
   dueDate: string | null;
   status: string;
+  loanStatus: string;
+  disbursementStatus: string;
+  disbursedAmount: number | null;
+  disbursedAt: string | null;
+  paymentMethod: string | null;
+  transactionReference: string | null;
+  adminNotes: string | null;
   approvedAt: string | null;
+  application: unknown;
+  borrowerDetails: BorrowerDetails | null;
 }
 
 export interface AdminDocumentPreview {
@@ -345,6 +376,7 @@ export class BackendService {
   readonly loans = signal<AdminLoanRecord[]>([]);
   readonly loansLoading = signal(false);
   readonly loansError = signal('');
+  readonly loansTotalCount = signal(0);
   readonly loading = signal(false);
 
   private accessToken: string | null = null;
@@ -508,29 +540,122 @@ export class BackendService {
     }, accessToken);
   }
 
-  async loadAdminLoans(): Promise<void> {
+  async rejectAdminApplication(requestId: string, decisionNote: string): Promise<void> {
+    const accessToken = this.requireAdminAccessToken();
+    const reason = decisionNote.trim();
+    if (!reason) throw new Error('A rejection reason is required.');
+    if (reason.length > 2000) throw new Error('The rejection reason cannot exceed 2,000 characters.');
+    await this.edgeRequest('pjvault-admin-api', {
+      action: 'reject_application',
+      request_id: requestId,
+      reason,
+    }, accessToken);
+  }
+
+  async decideAdminApplication(
+    requestId: string,
+    decision: 'APPROVED' | 'REJECTED',
+    loanAmount: number | null,
+    dueDate: string | null,
+    decisionNote: string | null,
+  ): Promise<unknown> {
+    const accessToken = this.requireAdminAccessToken();
+    const action = decision === 'APPROVED' ? 'approve_application' : 'reject_application';
+    if (decision === 'APPROVED') {
+      if (!Number.isFinite(loanAmount) || !loanAmount || loanAmount <= 0 || loanAmount > 9999999999.99) {
+        throw new Error('Enter a loan amount greater than zero and no more than 9,999,999,999.99 BWP.');
+      }
+      if (!dueDate || !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) {
+        throw new Error('Choose a valid loan due date.');
+      }
+      return this.edgeRequest('pjvault-admin-api', {
+        action,
+        request_id: requestId,
+        loan_amount: loanAmount,
+        due_date: dueDate,
+        decision_note: decisionNote?.trim() || null,
+      }, accessToken);
+    }
+    const reason = decisionNote?.trim() ?? '';
+    if (!reason) throw new Error('A rejection reason is required.');
+    if (reason.length > 2000) throw new Error('The rejection reason cannot exceed 2,000 characters.');
+    return this.edgeRequest('pjvault-admin-api', {
+      action,
+      request_id: requestId,
+      reason,
+    }, accessToken);
+  }
+
+  async loadAdminLoans(
+    status: 'APPROVED' | 'DISBURSED' | null = null,
+    limit = 50,
+    offset = 0,
+  ): Promise<void> {
     if (!this.accessToken || !this.adminUser()) return;
+    const safeLimit = Math.min(100, Math.max(1, Number.isInteger(limit) ? limit : 50));
+    const safeOffset = Math.max(0, Number.isInteger(offset) ? offset : 0);
     this.loansLoading.set(true);
     this.loansError.set('');
     try {
-      const loadedLoans: AdminLoanRecord[] = [];
-      const pageSize = 100;
-      for (let offset = 0; ; offset += pageSize) {
-        const response = await this.edgeRequest('pjvault-admin-api', {
-          action: 'list_loans',
-          limit: pageSize,
-          offset,
-        }, this.accessToken);
-        const page = rows(response);
-        loadedLoans.push(...page.map((row) => this.mapAdminLoan(row)));
-        if (page.length < pageSize) break;
-      }
-      this.loans.set(loadedLoans);
+      const response = await this.edgeRequest('pjvault-admin-api', {
+        action: 'list_loans',
+        status,
+        limit: safeLimit,
+        offset: safeOffset,
+      }, this.accessToken);
+      const page = rows(response);
+      this.loans.set(page.map((row) => this.mapAdminLoan(row)));
+      const totalCount = page.reduce((total, row) => {
+        const value = Number(row['total_count']);
+        return Number.isFinite(value) && value > total ? value : total;
+      }, 0);
+      this.loansTotalCount.set(totalCount || page.length);
     } catch (error) {
       this.loansError.set(error instanceof Error ? error.message : 'PJVault loans could not be loaded.');
+      this.loansTotalCount.set(0);
     } finally {
       this.loansLoading.set(false);
     }
+  }
+
+  async getAdminLoan(loanId: string): Promise<AdminLoanRecord> {
+    const accessToken = this.requireAdminAccessToken();
+    const response = await this.edgeRequest('pjvault-admin-api', {
+      action: 'get_loan',
+      loan_id: loanId,
+    }, accessToken);
+    const loan = firstRecord(response);
+    if (!loan) throw new Error('PJVault did not return loan details.');
+    const nestedLoan = firstRecord(loan['loan']) ?? loan;
+    return this.mapAdminLoan(nestedLoan, loan);
+  }
+
+  async recordAdminDisbursement(
+    loanId: string,
+    disbursedAmount: number,
+    disbursedAt: string,
+    paymentMethod: string,
+    transactionReference: string,
+    adminNotes: string,
+  ): Promise<unknown> {
+    const accessToken = this.requireAdminAccessToken();
+    if (!Number.isFinite(disbursedAmount) || disbursedAmount <= 0) {
+      throw new Error('Enter a positive actual disbursed amount.');
+    }
+    if (!disbursedAt) throw new Error('Enter the actual transaction date and time.');
+    if (!paymentMethod.trim()) throw new Error('Enter the payment method.');
+    if (paymentMethod.trim().length > 80) throw new Error('Payment method cannot exceed 80 characters.');
+    if (transactionReference.trim().length > 160) throw new Error('Transaction reference cannot exceed 160 characters.');
+    if (adminNotes.trim().length > 2000) throw new Error('Administrative notes cannot exceed 2,000 characters.');
+    return this.edgeRequest('pjvault-admin-api', {
+      action: 'record_disbursement',
+      loan_id: loanId,
+      disbursed_amount: disbursedAmount,
+      disbursed_at: disbursedAt,
+      payment_method: paymentMethod.trim(),
+      transaction_reference: transactionReference.trim() || null,
+      admin_notes: adminNotes.trim() || null,
+    }, accessToken);
   }
 
   async createAdminDocumentPreview(
@@ -1088,8 +1213,11 @@ export class BackendService {
     const root = firstRecord(value);
     if (!root) throw new Error('PJVault returned invalid application details.');
     const application = firstRecord(root['application']) ?? firstRecord(root['request']) ?? root;
+    const borrowerSubmission = firstRecord(application['borrower_submission'])
+      ?? firstRecord(root['borrower_submission']);
     const details = firstRecord(application['borrower_details'])
       ?? firstRecord(root['borrower_details'])
+      ?? borrowerSubmission
       ?? firstRecord(application['borrower'])
       ?? application;
     const rawDocuments = application['documents']
@@ -1114,14 +1242,35 @@ export class BackendService {
         required: document['required'] === true,
       };
     });
-    const whatsappNumber = nullableString(details, ['whatsapp_number', 'phone_number']);
-    const courseName = nullableString(details, ['course_name', 'course']);
-    const academicYear = nullableString(details, ['academic_year', 'year_of_study']);
+    const whatsappNumber = nullableString(details, ['whatsapp_number', 'phone_number'])
+      ?? nullableString(application, ['whatsapp_number', 'phone_number']);
+    const courseName = nullableString(details, ['course_name', 'course'])
+      ?? nullableString(application, ['course_name', 'course']);
+    const academicYear = nullableString(details, ['academic_year', 'year_of_study'])
+      ?? nullableString(application, ['academic_year', 'year_of_study']);
+
+    const documentCountsRecord = firstRecord(application['document_counts']) ?? firstRecord(root['document_counts']) ?? {};
+    const lendingDecisionRecord = firstRecord(application['lending_decision'])
+      ?? firstRecord(application['decision'])
+      ?? firstRecord(root['lending_decision'])
+      ?? null;
+    const lendingDecision: AdminLendingDecision | null = lendingDecisionRecord ? {
+      decision: stringValue(lendingDecisionRecord, ['decision', 'lending_decision', 'status'], 'UNKNOWN'),
+      loanAmount: Number.isFinite(Number(lendingDecisionRecord['loan_amount']))
+        ? Number(lendingDecisionRecord['loan_amount'])
+        : null,
+      dueDate: nullableString(lendingDecisionRecord, ['due_date']),
+      decidedAt: nullableString(lendingDecisionRecord, ['decided_at', 'created_at']),
+      decisionNote: nullableString(lendingDecisionRecord, ['decision_note', 'note', 'reason']),
+    } : null;
+    const loanRecord = firstRecord(application['loan']) ?? firstRecord(root['loan']);
+    const requestStatus = stringValue(application, ['request_status', 'status'], 'UNKNOWN');
 
     return {
       requestId: stringValue(application, ['request_id', 'id'], fallbackRequestId),
       requestCode: stringValue(application, ['request_code', 'code'], 'Request'),
-      status: stringValue(application, ['application_status', 'review_status', 'status', 'request_status'], 'UNKNOWN'),
+      status: stringValue(application, ['lending_decision_status', 'application_status', 'review_status', 'status', 'request_status'], requestStatus),
+      requestStatus,
       recipientLabel: nullableString(application, ['recipient_label', 'borrower_name', 'full_name'])
         ?? nullableString(details, ['full_name', 'borrower_name', 'name']),
       submittedAt: nullableString(application, ['submitted_at', 'created_at']),
@@ -1134,31 +1283,70 @@ export class BackendService {
         academicYear: academicYear ?? '',
       },
       documents,
+      documentCounts: {
+        total: Number(documentCountsRecord['total']) || documents.length,
+        pendingReview: Number(documentCountsRecord['pending_review']) || 0,
+        accepted: Number(documentCountsRecord['accepted']) || 0,
+        rejected: Number(documentCountsRecord['rejected']) || 0,
+      },
+      lendingDecision,
+      loan: loanRecord ? this.mapAdminLoan(loanRecord) : null,
     };
   }
 
-  private mapAdminLoan(row: Record<string, unknown>): AdminLoanRecord {
-    const borrowerDetails = firstRecord(row['borrower_details']) ?? {};
-    const amountRaw = row['loan_amount'] ?? row['principal_amount'] ?? row['amount'];
+  private mapAdminLoan(row: Record<string, unknown>, root?: Record<string, unknown>): AdminLoanRecord {
+    const container = root ?? row;
+    const borrowerDetailsRecord = firstRecord(row['borrower_details'])
+      ?? firstRecord(container['borrower_details'])
+      ?? firstRecord(container['application'])?.['borrower_details'] as Record<string, unknown> | undefined
+      ?? {};
+    const amountRaw = row['approved_amount'] ?? row['loan_amount'] ?? row['principal_amount'] ?? row['amount'];
     const amount = typeof amountRaw === 'number' || typeof amountRaw === 'string'
       ? Number(amountRaw)
       : NaN;
+    const disbursedAmountRaw = row['disbursed_amount'];
+    const disbursedAmount = typeof disbursedAmountRaw === 'number' || typeof disbursedAmountRaw === 'string'
+      ? Number(disbursedAmountRaw)
+      : NaN;
+    const whatsappNumber = nullableString(row, ['whatsapp_number', 'phone_number'])
+      ?? nullableString(borrowerDetailsRecord, ['whatsapp_number', 'phone_number']);
+    const courseName = nullableString(row, ['course_name', 'course'])
+      ?? nullableString(borrowerDetailsRecord, ['course_name', 'course']);
+    const academicYear = nullableString(row, ['academic_year', 'year_of_study'])
+      ?? nullableString(borrowerDetailsRecord, ['academic_year', 'year_of_study']);
+    const loanStatus = stringValue(row, ['loan_status', 'status'], 'APPROVED');
+    const disbursementStatus = stringValue(row, ['disbursement_status', 'disbursement_status'], loanStatus === 'DISBURSED' ? 'DISBURSED' : 'NOT_DISBURSED');
     return {
       loanId: stringValue(row, ['loan_id', 'id'], 'unknown'),
+      loanReference: stringValue(row, ['loan_reference', 'reference'], 'Loan'),
       requestId: stringValue(row, ['request_id']),
       requestCode: stringValue(row, ['request_code', 'application_code'], 'Loan'),
       borrowerName: nullableString(row, ['borrower_name', 'recipient_label', 'full_name'])
-        ?? nullableString(borrowerDetails, ['borrower_name', 'full_name', 'name']),
-      courseName: nullableString(row, ['course_name'])
-        ?? nullableString(borrowerDetails, ['course_name', 'course']),
-      academicYear: nullableString(row, ['academic_year'])
-        ?? nullableString(borrowerDetails, ['academic_year', 'year_of_study']),
-      whatsappNumber: nullableString(row, ['whatsapp_number', 'phone_number'])
-        ?? nullableString(borrowerDetails, ['whatsapp_number', 'phone_number']),
+        ?? nullableString(borrowerDetailsRecord, ['borrower_name', 'full_name', 'name']),
+      courseName,
+      academicYear,
+      whatsappNumber,
       amount: Number.isFinite(amount) ? amount : null,
+      currency: stringValue(row, ['currency'], 'BWP'),
+      approvalDate: nullableString(row, ['approval_date', 'approved_at', 'created_at']),
       dueDate: nullableString(row, ['due_date']),
-      status: stringValue(row, ['status', 'loan_status'], 'APPROVED'),
-      approvedAt: nullableString(row, ['approved_at', 'created_at']),
+      status: loanStatus,
+      loanStatus,
+      disbursementStatus,
+      disbursedAmount: Number.isFinite(disbursedAmount) ? disbursedAmount : null,
+      disbursedAt: nullableString(row, ['disbursed_at']),
+      paymentMethod: nullableString(row, ['payment_method']),
+      transactionReference: nullableString(row, ['transaction_reference']),
+      adminNotes: nullableString(row, ['admin_notes']),
+      approvedAt: nullableString(row, ['approved_at', 'approval_date', 'created_at']),
+      application: container['application'] ?? null,
+      borrowerDetails: whatsappNumber || courseName || academicYear
+        ? {
+            whatsappNumber: whatsappNumber ?? '',
+            courseName: courseName ?? '',
+            academicYear: academicYear ?? '',
+          }
+        : null,
     };
   }
 

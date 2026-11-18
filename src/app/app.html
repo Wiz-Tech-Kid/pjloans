@@ -502,9 +502,30 @@
                       <button class="button button--mint" type="button" [disabled]="documentReviewBusyId() === document.documentId" (click)="reviewApplicationDocument(document, 'ACCEPTED')">
                         {{ documentReviewBusyId() === document.documentId ? 'Saving…' : 'Accept' }}
                       </button>
-                      <button class="button button--danger" type="button" [disabled]="documentReviewBusyId() === document.documentId" (click)="reviewApplicationDocument(document, 'REJECTED')">Reject</button>
+                      <button class="button button--danger" type="button" [disabled]="documentReviewBusyId() === document.documentId" (click)="openDocumentRejection(document)">Reject</button>
                     }
                   </div>
+                  @if (rejectingDocumentId() === document.documentId) {
+                    <div class="document-rejection-form">
+                      <label>
+                        <span>Rejection reason <b>*</b></span>
+                        <textarea
+                          rows="3"
+                          maxlength="2000"
+                          [ngModel]="documentRejectionReason()"
+                          (ngModelChange)="documentRejectionReason.set($event)"
+                          [ngModelOptions]="{ standalone: true }"
+                        ></textarea>
+                      </label>
+                      <small>The borrower must submit a replacement document.</small>
+                      <div class="application-document__actions">
+                        <button class="button button--danger" type="button" [disabled]="documentReviewBusyId() === document.documentId" (click)="reviewApplicationDocument(document, 'REJECTED')">
+                          {{ documentReviewBusyId() === document.documentId ? 'Saving…' : 'Confirm rejection' }}
+                        </button>
+                        <button class="button button--ghost" type="button" (click)="cancelDocumentRejection()">Cancel</button>
+                      </div>
+                    </div>
+                  }
                 </article>
               } @empty {
                 <div class="empty-panel"><h2>No submitted documents.</h2><p>Documents appear here after the borrower uploads them.</p></div>
@@ -512,12 +533,34 @@
             </section>
 
             <section class="application-approval" aria-labelledby="approval-title">
-              <div class="section-title"><p class="eyebrow">Loan decision</p><h2 id="approval-title">Approve application</h2></div>
-              @if (!canApproveApplication(application)) {
-                <p class="review-gate" role="status">Approval unlocks after borrower details are submitted and every submitted document is accepted.</p>
+              <div class="section-title"><p class="eyebrow">Separate lending decision</p><h2 id="approval-title">Loan decision</h2></div>
+              @if (application.lendingDecision; as lendingDecision) {
+                <div class="lending-decision">
+                  <span class="state-pill" [class]="'state-pill--' + lendingDecision.decision.toLowerCase()">{{ lendingDecision.decision }}</span>
+                  @if (lendingDecision.decision === 'APPROVED') {
+                    <p>Approved for {{ formatLoanAmount(lendingDecision.loanAmount) }}. Due {{ lendingDecision.dueDate ? shortDate(lendingDecision.dueDate) : '—' }}.</p>
+                  } @else {
+                    <p>No loan was created. {{ lendingDecision.decisionNote || 'The application was rejected.' }}</p>
+                  }
+                  @if (approvalSuccess()) { <p class="success-message" role="status">{{ approvalSuccess() }}</p> }
+                </div>
+              } @else if (!canApproveApplication(application)) {
+                <p class="review-gate" role="status">
+                  {{ (application.requestStatus ?? application.status) === 'NEEDS_REUPLOAD'
+                    ? 'Replacement documents are required before lending eligibility can be restored.'
+                    : 'Document verification must be completed and the request must be REVIEWED before a lending decision is available.' }}
+                  @if (application.documentCounts) {
+                    {{ application.documentCounts.pendingReview }} pending · {{ application.documentCounts.accepted }} accepted · {{ application.documentCounts.rejected }} rejected.
+                  }
+                </p>
               } @else {
+                <div class="decision-mode">
+                  <button type="button" class="button" [class.button--mint]="loanDecisionMode() === 'APPROVE'" (click)="loanDecisionMode.set('APPROVE')">Approve</button>
+                  <button type="button" class="button" [class.button--danger]="loanDecisionMode() === 'REJECT'" (click)="loanDecisionMode.set('REJECT')">Reject application</button>
+                </div>
+                @if (loanDecisionMode() === 'APPROVE') {
                 <div class="approval-form">
-                  <label><span>Loan amount (BWP) <b>*</b></span><input name="loanAmount" type="number" min="0.01" step="0.01" [(ngModel)]="loanAmount" /></label>
+                  <label><span>Loan amount (BWP) <b>*</b></span><input name="loanAmount" type="number" min="0.01" max="9999999999.99" step="0.01" [(ngModel)]="loanAmount" /></label>
                   <label><span>Due date <b>*</b></span><input name="loanDueDate" type="date" [(ngModel)]="loanDueDate" /></label>
                   <label class="approval-form__note"><span>Decision note</span><textarea name="loanDecisionNote" rows="3" maxlength="2000" [(ngModel)]="loanDecisionNote"></textarea></label>
                   @if (approvalError()) { <p class="inline-error" role="alert">{{ approvalError() }}</p> }
@@ -525,6 +568,15 @@
                     {{ approvalBusy() ? 'Approving…' : 'Approve and create loan' }} <span aria-hidden="true">→</span>
                   </button>
                 </div>
+                } @else {
+                <div class="approval-form">
+                  <label class="approval-form__note"><span>Rejection reason <b>*</b></span><textarea name="loanRejectionReason" rows="4" maxlength="2000" [(ngModel)]="loanRejectionReason"></textarea></label>
+                  @if (approvalError()) { <p class="inline-error" role="alert">{{ approvalError() }}</p> }
+                  <button class="button button--danger" type="button" [disabled]="approvalBusy()" (click)="rejectApplication()">
+                    {{ approvalBusy() ? 'Saving…' : 'Reject application' }}
+                  </button>
+                </div>
+                }
               }
             </section>
           </div>
@@ -551,21 +603,74 @@
       <section class="admin-panel" aria-labelledby="loans-title">
         <div class="view-heading">
           <div><p class="eyebrow">Approved applications</p><h1 id="loans-title">Loans<span class="mint-period">.</span></h1><p>Track approved borrowers and the terms set when each loan was created.</p></div>
-          <button class="button button--outline" type="button" (click)="backend.loadAdminLoans()">Refresh loans</button>
+          <button class="button button--outline" type="button" (click)="loadLoansPage()">Refresh loans</button>
         </div>
         @if (approvalSuccess()) { <p class="success-message" role="status">{{ approvalSuccess() }}</p> }
         @if (backend.loansLoading()) { <p class="loading-state">Loading loans…</p> }
         @if (backend.loansError()) { <p class="inline-error" role="alert">{{ backend.loansError() }}</p> }
+        @if (selectedLoan(); as loan) {
+          <section class="loan-detail">
+            <div class="loan-detail__heading">
+              <button class="text-button" type="button" (click)="closeLoanDetail()">← Back to loans</button>
+              <span class="state-pill" [class]="'state-pill--' + loan.loanStatus.toLowerCase()">{{ loan.loanStatus }}</span>
+            </div>
+            @if (loanDetailLoading()) { <p class="loading-state">Loading loan details…</p> }
+            @if (loanDetailError()) { <p class="inline-error" role="alert">{{ loanDetailError() }}</p> }
+            <div class="loan-detail__summary">
+              <div><p class="eyebrow">Loan reference</p><h2>{{ loan.loanReference }}</h2></div>
+              <dl>
+                <div><dt>Borrower</dt><dd>{{ loan.borrowerName || loan.requestCode }}</dd></div>
+                <div><dt>WhatsApp</dt><dd>{{ loan.whatsappNumber || 'Not provided' }}</dd></div>
+                <div><dt>Course</dt><dd>{{ loan.courseName || '—' }}</dd></div>
+                <div><dt>Academic year</dt><dd>{{ loan.academicYear || '—' }}</dd></div>
+                <div><dt>Approved amount</dt><dd>{{ formatLoanAmount(loan.amount) }} {{ loan.currency }}</dd></div>
+                <div><dt>Approval date</dt><dd>{{ loan.approvedAt ? shortDate(loan.approvedAt) : '—' }}</dd></div>
+                <div><dt>Due date</dt><dd>{{ loan.dueDate ? shortDate(loan.dueDate) : '—' }}</dd></div>
+                <div><dt>Disbursement</dt><dd>{{ loan.disbursementStatus.replaceAll('_', ' ') }}</dd></div>
+              </dl>
+            </div>
+            @if (loan.loanStatus === 'APPROVED') {
+              <section class="disbursement-form">
+                <h3>Record external disbursement</h3>
+                <p>First complete the transfer through your banking application or payment channel. Return here only to record the transaction.</p>
+                <div class="approval-form">
+                  <label><span>Actual amount transferred (BWP) <b>*</b></span><input type="number" min="0.01" step="0.01" [(ngModel)]="disbursedAmount" /></label>
+                  <label><span>Actual transaction date and time <b>*</b></span><input type="datetime-local" [(ngModel)]="disbursedAt" /></label>
+                  <label><span>Payment method <b>*</b></span><input type="text" maxlength="80" [(ngModel)]="disbursementPaymentMethod" /></label>
+                  <label><span>Transaction reference</span><input type="text" maxlength="160" [(ngModel)]="disbursementTransactionReference" /></label>
+                  <label class="approval-form__note"><span>Administrative notes</span><textarea maxlength="2000" rows="3" [(ngModel)]="disbursementAdminNotes"></textarea></label>
+                  @if (disbursementError()) { <p class="inline-error" role="alert">{{ disbursementError() }}</p> }
+                  <button class="button button--mint" type="button" [disabled]="disbursementBusy()" (click)="recordExternalDisbursement()">
+                    {{ disbursementBusy() ? 'Saving…' : 'Record external disbursement' }}
+                  </button>
+                </div>
+              </section>
+            } @else if (loan.loanStatus === 'DISBURSED') {
+              <section class="disbursement-record">
+                <h3>External disbursement recorded</h3>
+                <p>{{ formatLoanAmount(loan.disbursedAmount) }} {{ loan.currency }} · {{ loan.disbursedAt ? shortDate(loan.disbursedAt) : 'Date unavailable' }} · {{ loan.paymentMethod || 'Payment method unavailable' }}</p>
+                @if (loan.transactionReference) { <p>Reference: {{ loan.transactionReference }}</p> }
+                @if (disbursementSuccess()) { <p class="success-message" role="status">{{ disbursementSuccess() }}</p> }
+              </section>
+            }
+          </section>
+        } @else {
+        <div class="loan-filters" aria-label="Loan status filter">
+          <button type="button" class="button" [class.button--mint]="loanFilter() === 'ALL'" (click)="setLoanFilter('ALL')">All loans</button>
+          <button type="button" class="button" [class.button--mint]="loanFilter() === 'APPROVED'" (click)="setLoanFilter('APPROVED')">Approved</button>
+          <button type="button" class="button" [class.button--mint]="loanFilter() === 'DISBURSED'" (click)="setLoanFilter('DISBURSED')">Disbursed</button>
+        </div>
         <div class="loans-table">
-          <div class="loans-table__head"><span>Borrower</span><span>Course / year</span><span>Approved amount</span><span>Due date</span><span>Status</span><span></span></div>
+          <div class="loans-table__head"><span>Loan / borrower</span><span>Course / year</span><span>Approved amount</span><span>Due date</span><span>Loan status</span><span>Disbursement</span><span></span></div>
           @for (loan of backend.loans(); track loan.loanId) {
             <article class="loans-table__row">
-              <div><strong>{{ loan.borrowerName || loan.requestCode }}</strong><small>{{ loan.requestCode }} · {{ loan.whatsappNumber || 'No WhatsApp number' }}</small></div>
+              <div><strong>{{ loan.loanReference }}</strong><small>{{ loan.borrowerName || loan.requestCode }} · {{ loan.whatsappNumber || 'No WhatsApp number' }}</small></div>
               <div><strong>{{ loan.courseName || '—' }}</strong><small>{{ loan.academicYear || '—' }}</small></div>
-              <strong>{{ formatLoanAmount(loan.amount) }}</strong>
+              <strong>{{ formatLoanAmount(loan.amount) }} {{ loan.currency }}</strong>
               <span>{{ loan.dueDate ? shortDate(loan.dueDate) : '—' }}</span>
-              <span class="state-pill" [class]="'state-pill--' + loan.status.toLowerCase()">{{ loan.status.replaceAll('_', ' ') }}</span>
-              @if (loan.requestId) { <button class="text-button" type="button" (click)="openApplication(loan.requestId)">View borrower file <span>↗</span></button> } @else { <span>—</span> }
+              <span class="state-pill" [class]="'state-pill--' + loan.loanStatus.toLowerCase()">{{ loan.loanStatus.replaceAll('_', ' ') }}</span>
+              <span>{{ loan.disbursementStatus.replaceAll('_', ' ') }}</span>
+              <button class="text-button" type="button" (click)="openLoan(loan)">View loan <span>↗</span></button>
             </article>
           } @empty {
             @if (!backend.loansLoading() && !backend.loansError()) {
@@ -573,6 +678,14 @@
             }
           }
         </div>
+        @if (backend.loansTotalCount() > 50) {
+          <div class="loan-pagination">
+            <button class="button button--outline" type="button" [disabled]="loanOffset() === 0" (click)="previousLoansPage()">Previous</button>
+            <span>Page {{ (loanOffset() / 50) + 1 }} of {{ backend.loansTotalCount() ? ((backend.loansTotalCount() - 1) / 50 + 1) : 1 }}</span>
+            <button class="button button--outline" type="button" [disabled]="loanOffset() + 50 >= backend.loansTotalCount()" (click)="loadLoansPage(loanOffset() + 50)">Next</button>
+          </div>
+        }
+        }
       </section>
     }
 

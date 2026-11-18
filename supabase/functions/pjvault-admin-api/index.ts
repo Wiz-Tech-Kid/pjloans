@@ -166,11 +166,11 @@ Deno.serve(async (req: Request) => {
       }
       case 'review_document': {
         if (!validUuid(body.document_id) || !['ACCEPTED', 'REJECTED'].includes(String(body.decision))) return json({ error: 'Valid document_id and decision are required' }, 400);
-        const result = await rpc('admin_review_document', {
+        const result = await rpc('pjvault_admin_review_document', {
           p_document_id: body.document_id,
           p_decision: body.decision,
           p_note: typeof body.note === 'string' ? body.note : null,
-        });
+        }, 'public');
         if (!result.ok) return failed(result);
         return json(firstRow(result.body));
       }

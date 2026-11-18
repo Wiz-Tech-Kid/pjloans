@@ -14,6 +14,7 @@ import {
   BorrowerRequestStatus,
   BorrowerSession,
   PjVaultRequirement,
+  AdminLoanRecord,
 } from './backend.service';
 
 type Theme = 'dark' | 'light';
@@ -115,15 +116,32 @@ export class App implements OnDestroy {
   readonly documentBusyId = signal<string | null>(null);
   readonly documentReviewBusyId = signal<string | null>(null);
   readonly documentReviewError = signal('');
+  readonly rejectingDocumentId = signal<string | null>(null);
+  readonly documentRejectionReason = signal('');
   readonly approvalBusy = signal(false);
   readonly approvalError = signal('');
   readonly approvalSuccess = signal('');
+  readonly selectedLoan = signal<AdminLoanRecord | null>(null);
+  readonly loanDetailLoading = signal(false);
+  readonly loanDetailError = signal('');
+  readonly loanFilter = signal<'ALL' | 'APPROVED' | 'DISBURSED'>('ALL');
+  readonly loanOffset = signal(0);
+  readonly loanDecisionMode = signal<'APPROVE' | 'REJECT'>('APPROVE');
+  readonly disbursementBusy = signal(false);
+  readonly disbursementError = signal('');
+  readonly disbursementSuccess = signal('');
   readonly applicationReturnView = signal<'requests' | 'review' | 'loans'>('review');
   readonly linkTtlPresets = LINK_TTL_PRESETS;
   documentReviewNote = '';
   loanAmount = 0;
   loanDueDate = '';
   loanDecisionNote = '';
+  loanRejectionReason = '';
+  disbursedAmount = 0;
+  disbursedAt = '';
+  disbursementPaymentMethod = '';
+  disbursementTransactionReference = '';
+  disbursementAdminNotes = '';
 
   ngOnDestroy(): void {
     this.closeDocumentPreview();
@@ -249,8 +267,46 @@ export class App implements OnDestroy {
   openLoans(): void {
     this.adminView.set('loans');
     this.selectedApplication.set(null);
+    this.selectedLoan.set(null);
     this.mobileNavOpen.set(false);
-    void this.backend.loadAdminLoans();
+    this.loanOffset.set(0);
+    this.loadLoansPage();
+  }
+
+  setLoanFilter(filter: 'ALL' | 'APPROVED' | 'DISBURSED'): void {
+    this.loanFilter.set(filter);
+    this.loanOffset.set(0);
+    this.loadLoansPage();
+  }
+
+  loadLoansPage(offset = this.loanOffset()): void {
+    this.loanOffset.set(offset);
+    const filter = this.loanFilter();
+    void this.backend.loadAdminLoans(filter === 'ALL' ? null : filter, 50, offset);
+  }
+
+  previousLoansPage(): void {
+    this.loadLoansPage(Math.max(0, this.loanOffset() - 50));
+  }
+
+  async openLoan(loan: AdminLoanRecord): Promise<void> {
+    this.loanDetailLoading.set(true);
+    this.loanDetailError.set('');
+    this.disbursementError.set('');
+    this.disbursementSuccess.set('');
+    this.selectedLoan.set(loan);
+    try {
+      this.selectedLoan.set(await this.backend.getAdminLoan(loan.loanId));
+    } catch (error) {
+      this.loanDetailError.set(error instanceof Error ? error.message : 'The loan details could not be loaded.');
+    } finally {
+      this.loanDetailLoading.set(false);
+    }
+  }
+
+  closeLoanDetail(): void {
+    this.selectedLoan.set(null);
+    this.loanDetailError.set('');
   }
 
   async openApplication(request: AdminRequestRecord | string): Promise<void> {
@@ -288,15 +344,20 @@ export class App implements OnDestroy {
   }
 
   canApproveApplication(application: AdminApplication): boolean {
-    return ['SUBMITTED', 'PENDING_REVIEW', 'UNDER_REVIEW'].includes(application.status.toUpperCase())
+    const requestStatus = (application.requestStatus ?? application.status).toUpperCase();
+    const counts = application.documentCounts;
+    return requestStatus === 'REVIEWED'
+      && !application.lendingDecision
       && application.borrowerDetailsSubmitted
-      && application.documents.length > 0
-      && application.documents.every((document) => document.reviewStatus.toUpperCase() === 'ACCEPTED');
+      && (counts ? counts.total > 0 && counts.pendingReview === 0 && counts.rejected === 0
+        : application.documents.length > 0
+          && application.documents.every((document) => document.reviewStatus.toUpperCase() === 'ACCEPTED'));
   }
 
   canReviewApplicationDocument(application: AdminApplication, document: AdminApplicationDocument): boolean {
-    return ['SUBMITTED', 'PENDING_REVIEW', 'UNDER_REVIEW'].includes(application.status.toUpperCase())
-      && document.reviewStatus.toUpperCase() === 'PENDING';
+    const requestStatus = (application.requestStatus ?? application.status).toUpperCase();
+    return requestStatus !== 'APPROVED'
+      && document.reviewStatus.toUpperCase() === 'PENDING_REVIEW';
   }
 
   async viewApplicationDocument(document: AdminApplicationDocument): Promise<void> {
@@ -585,17 +646,44 @@ export class App implements OnDestroy {
     log('PJVault document preview diagnostic', { category, ...details });
   }
 
+  openDocumentRejection(document: AdminApplicationDocument): void {
+    this.rejectingDocumentId.set(document.documentId);
+    this.documentRejectionReason.set('');
+    this.documentReviewError.set('');
+  }
+
+  cancelDocumentRejection(): void {
+    this.rejectingDocumentId.set(null);
+    this.documentRejectionReason.set('');
+  }
+
   async reviewApplicationDocument(
     document: AdminApplicationDocument,
     decision: 'ACCEPTED' | 'REJECTED',
   ): Promise<void> {
     const application = this.selectedApplication();
     if (!application) return;
+    if (decision === 'REJECTED') {
+      const reason = this.documentRejectionReason().trim();
+      if (!reason) {
+        this.documentReviewError.set('A rejection reason is required before the borrower can re-upload.');
+        return;
+      }
+      if (reason.length > 2000) {
+        this.documentReviewError.set('The rejection reason cannot exceed 2,000 characters.');
+        return;
+      }
+    }
     this.documentReviewBusyId.set(document.documentId);
     this.documentReviewError.set('');
     try {
-      await this.backend.reviewAdminDocument(document.documentId, decision, this.documentReviewNote);
+      const note = decision === 'REJECTED'
+        ? this.documentRejectionReason().trim()
+        : this.documentReviewNote.trim();
+      await this.backend.reviewAdminDocument(document.documentId, decision, note);
       this.documentReviewNote = '';
+      this.documentRejectionReason.set('');
+      this.rejectingDocumentId.set(null);
       this.selectedApplication.set(await this.backend.loadAdminApplication(application.requestId));
       await this.backend.loadAdminRequests();
     } catch (error) {
@@ -608,25 +696,100 @@ export class App implements OnDestroy {
   async approveApplication(): Promise<void> {
     const application = this.selectedApplication();
     if (!application || !this.canApproveApplication(application)) return;
+    if (!window.confirm('Approve this application and create the BWP loan?')) return;
     this.approvalBusy.set(true);
     this.approvalError.set('');
     this.approvalSuccess.set('');
     try {
-      await this.backend.approveAdminApplication(
+      await this.backend.decideAdminApplication(
         application.requestId,
+        'APPROVED',
         this.loanAmount,
         this.loanDueDate,
         this.loanDecisionNote,
       );
-      this.approvalSuccess.set(`Request ${application.requestCode} was approved and added to the loans list.`);
       await this.backend.loadAdminRequests();
       await this.backend.loadAdminLoans();
-      this.selectedApplication.set(null);
-      this.adminView.set('loans');
+      this.selectedApplication.set(await this.backend.loadAdminApplication(application.requestId));
+      this.approvalSuccess.set(`Lending decision approved. Request ${application.requestCode} now has a loan.`);
     } catch (error) {
       this.approvalError.set(error instanceof Error ? error.message : 'The application could not be approved.');
     } finally {
       this.approvalBusy.set(false);
+    }
+  }
+
+  async rejectApplication(): Promise<void> {
+    const application = this.selectedApplication();
+    if (!application || !this.canApproveApplication(application)) return;
+    const reason = this.loanRejectionReason.trim();
+    if (!reason) {
+      this.approvalError.set('A rejection reason is required.');
+      return;
+    }
+    if (reason.length > 2000) {
+      this.approvalError.set('The rejection reason cannot exceed 2,000 characters.');
+      return;
+    }
+    if (!window.confirm('Reject this lending application? No loan will be created.')) return;
+    this.approvalBusy.set(true);
+    this.approvalError.set('');
+    this.approvalSuccess.set('');
+    try {
+      await this.backend.decideAdminApplication(
+        application.requestId,
+        'REJECTED',
+        null,
+        null,
+        reason,
+      );
+      await this.backend.loadAdminRequests();
+      await this.backend.loadAdminLoans();
+      this.selectedApplication.set(await this.backend.loadAdminApplication(application.requestId));
+      this.approvalSuccess.set(`Lending decision rejected for request ${application.requestCode}. No loan was created.`);
+    } catch (error) {
+      this.approvalError.set(error instanceof Error ? error.message : 'The application could not be rejected.');
+    } finally {
+      this.approvalBusy.set(false);
+    }
+  }
+
+  async recordExternalDisbursement(): Promise<void> {
+    const loan = this.selectedLoan();
+    if (!loan || loan.loanStatus !== 'APPROVED') return;
+    if (!this.disbursedAmount || this.disbursedAmount <= 0) {
+      this.disbursementError.set('Enter a positive actual disbursed amount.');
+      return;
+    }
+    if (!this.disbursedAt) {
+      this.disbursementError.set('Enter the actual transaction date and time.');
+      return;
+    }
+    if (!this.disbursementPaymentMethod.trim()) {
+      this.disbursementError.set('Enter the payment method.');
+      return;
+    }
+    if (!window.confirm('Confirm that the transfer was completed externally, then record it in PJVault?')) return;
+    this.disbursementBusy.set(true);
+    this.disbursementError.set('');
+    this.disbursementSuccess.set('');
+    try {
+      await this.backend.recordAdminDisbursement(
+        loan.loanId,
+        this.disbursedAmount,
+        new Date(this.disbursedAt).toISOString(),
+        this.disbursementPaymentMethod,
+        this.disbursementTransactionReference,
+        this.disbursementAdminNotes,
+      );
+      this.selectedLoan.set(await this.backend.getAdminLoan(loan.loanId));
+      const filter = this.loanFilter();
+      await this.backend.loadAdminLoans(filter === 'ALL' ? null : filter === 'APPROVED' ? 'APPROVED' : 'DISBURSED', 50, this.loanOffset());
+      this.disbursementSuccess.set('External disbursement recorded successfully.');
+    } catch (error) {
+      this.disbursementError.set(error instanceof Error ? error.message : 'The disbursement could not be recorded.');
+    } finally {
+      this.disbursementBusy.set(false);
     }
   }
 
@@ -653,8 +816,9 @@ export class App implements OnDestroy {
   reviewQueueRequests(): AdminRequestRecord[] {
     return this.backend.requests().filter((request) => {
       const status = request.status.toUpperCase();
+      if (['APPROVED', 'REJECTED', 'DISBURSED', 'CLOSED', 'REVOKED'].includes(status)) return false;
       return request.borrowerDetailsSubmitted || request.submissionComplete
-        || ['SUBMITTED', 'PENDING_REVIEW', 'UNDER_REVIEW'].includes(status);
+        || ['SUBMITTED', 'PENDING_REVIEW', 'UNDER_REVIEW', 'REVIEWED', 'NEEDS_REUPLOAD'].includes(status);
     });
   }
 
